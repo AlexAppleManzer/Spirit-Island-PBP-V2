@@ -14,9 +14,25 @@ interface Piece {
 
 const INVADER_TYPES = ['explorer', 'town', 'city'];
 const DAHAN_TYPES = ['dahan'];
-const SPIRIT_TOKEN_TYPES = ['badlands', 'beast', 'deeps', 'disease', 'quake', 'vitality', 'wilds', 'strife'];
+const SPIRIT_TOKEN_TYPES = ['badlands', 'beast', 'deeps', 'disease', 'quake', 'vitality', 'wilds', 'strife', 'blight'];
 
 const PIECE_TYPES = [...INVADER_TYPES, ...DAHAN_TYPES, ...SPIRIT_TOKEN_TYPES];
+
+const PIECE_CONFIG: Record<string, { damage: number }> = {
+  explorer: { damage: 0 },
+  town: { damage: 0 },
+  city: { damage: 0 },
+  dahan: { damage: 0 },
+  badlands: { damage: 0 },
+  beast: { damage: 0 },
+  deeps: { damage: 0 },
+  disease: { damage: 0 },
+  quake: { damage: 0 },
+  vitality: { damage: 0 },
+  wilds: { damage: 0 },
+  strife: { damage: 0 },
+  blight: { damage: 0 },
+};
 
 function pieceHasDamage(type: string): boolean {
   return INVADER_TYPES.includes(type) || DAHAN_TYPES.includes(type);

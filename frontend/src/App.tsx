@@ -1,8 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import * as Y from 'yjs';
-import { WebsocketProvider } from 'y-websocket';
-import BoardView from './components/BoardView';
-import PieceEditor from './components/PieceEditor';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import BoardPage from './pages/BoardPage';
 
 const BACKEND_URL = 'http://localhost:3001';
@@ -18,9 +14,10 @@ type Game = {
   name: string;
   ownerId: number;
   playerIds: number[];
+  playerCount?: number;
   status: string;
-  currentPhase: string;
-  round: number;
+  currentPhase?: string;
+  turn?: number;
   discordWebhookUrl?: string;
   createdAt: string;
 };
@@ -35,6 +32,7 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [games, setGames] = useState<Game[]>([]);
   const [newGameName, setNewGameName] = useState('');
+  const [newGameWebhook, setNewGameWebhook] = useState('');
   const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
 
   const authHeaders = useMemo(() => {
@@ -57,21 +55,21 @@ function App() {
     fetchProfile();
   }, [token, authHeaders]);
 
+  const refreshGames = useCallback(async () => {
+    const response = await fetch(`${BACKEND_URL}/api/games`, {
+      headers: { 'Content-Type': 'application/json', ...(authHeaders ?? {}) },
+    });
+    if (response.ok) {
+      const data = await response.json();
+      setGames(data);
+    }
+  }, [authHeaders]);
+
   useEffect(() => {
     if (!token) return;
 
-    const fetchGames = async () => {
-      const response = await fetch(`${BACKEND_URL}/api/games`, {
-        headers: { 'Content-Type': 'application/json', ...(authHeaders ?? {}) },
-      });
-      if (response.ok) {
-        const data = await response.json();
-        setGames(data);
-      }
-    };
-
-    fetchGames();
-  }, [token, authHeaders]);
+    void refreshGames();
+  }, [token, refreshGames]);
 
   const clearAuth = () => {
     setToken(null);
@@ -126,7 +124,10 @@ function App() {
     const response = await fetch(`${BACKEND_URL}/api/games`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...(authHeaders ?? {}) },
-      body: JSON.stringify({ name: newGameName }),
+      body: JSON.stringify({
+        name: newGameName,
+        discordWebhookUrl: newGameWebhook,
+      }),
     });
 
     if (!response.ok) {
@@ -138,6 +139,7 @@ function App() {
     const created = await response.json();
     setGames((current) => [...current, created]);
     setNewGameName('');
+    setNewGameWebhook('');
   };
 
   const handleJoinGame = async (gameId: string) => {
@@ -153,7 +155,32 @@ function App() {
       return;
     }
 
+    const data = await response.json();
+    if (data?.game) {
+      setGames((current) =>
+        current.map((game) => (game.id === data.game.id ? data.game : game))
+      );
+    }
     setSelectedGameId(gameId);
+  };
+
+  const handleLeaveGame = async (gameId: string) => {
+    setError(null);
+    const response = await fetch(`${BACKEND_URL}/api/games/${gameId}/leave`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(authHeaders ?? {}) },
+    });
+
+    if (!response.ok) {
+      const data = await response.json();
+      setError(data.message ?? data.error ?? 'Unable to leave game');
+      return;
+    }
+
+    await refreshGames();
+    if (selectedGameId === gameId) {
+      setSelectedGameId(null);
+    }
   };
 
   if (!token) {
@@ -269,6 +296,12 @@ function App() {
                   Create
                 </button>
               </div>
+              <input
+                value={newGameWebhook}
+                onChange={(event) => setNewGameWebhook(event.target.value)}
+                className="w-full rounded border px-3 py-2"
+                placeholder="Discord webhook URL (optional)"
+              />
               <div className="space-y-2">
                 {games.length === 0 && (
                   <p className="text-sm text-slate-500">No active games yet.</p>
@@ -279,15 +312,37 @@ function App() {
                       <div>
                         <p className="font-semibold">{game.name}</p>
                         <p className="text-sm text-slate-500">
-                          Phase: {game.currentPhase} · Round {game.round}
+                          Phase: {game.currentPhase ?? 'growth'} · Turn {game.turn ?? 1}
+                        </p>
+                        <p className="text-xs text-slate-500">
+                          Players: {game.playerCount ?? game.playerIds.length}/6
                         </p>
                       </div>
-                      <button
-                        onClick={() => handleJoinGame(game.id)}
-                        className="rounded bg-slate-800 px-3 py-2 text-sm text-white"
-                      >
-                        Join
-                      </button>
+                      <div className="flex items-center gap-2">
+                        {game.playerIds.includes(user?.id ?? -1) ? (
+                          <>
+                            <button
+                              onClick={() => setSelectedGameId(game.id)}
+                              className="rounded bg-slate-800 px-3 py-2 text-sm text-white"
+                            >
+                              Open
+                            </button>
+                            <button
+                              onClick={() => handleLeaveGame(game.id)}
+                              className="rounded border border-slate-300 px-3 py-2 text-sm text-slate-700"
+                            >
+                              Leave
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            onClick={() => handleJoinGame(game.id)}
+                            className="rounded bg-slate-800 px-3 py-2 text-sm text-white"
+                          >
+                            Join
+                          </button>
+                        )}
+                      </div>
                     </div>
                   </div>
                 ))}

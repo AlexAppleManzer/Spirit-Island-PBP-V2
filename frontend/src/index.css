@@ -70,6 +70,10 @@ body {
   margin: 0;
 }
 
+.hide-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
 h1,
 h2 {
   font-family: var(--heading);

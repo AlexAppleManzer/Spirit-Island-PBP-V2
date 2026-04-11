@@ -1,0 +1,159 @@
+export type InvaderCardDefinition = {
+  id: string;
+  stage: 1 | 2 | 3;
+  name: string;
+  faceUrl: string;
+  backUrl: string;
+};
+
+const shuffleCards = (cards: InvaderCardDefinition[]): InvaderCardDefinition[] => {
+  const shuffled = [...cards];
+  for (let index = shuffled.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    const current = shuffled[index];
+    const swap = shuffled[swapIndex];
+    if (current && swap) {
+      shuffled[index] = swap;
+      shuffled[swapIndex] = current;
+    }
+  }
+  return shuffled;
+};
+
+export const INVADER_CARDS: InvaderCardDefinition[] = [
+  {
+    id: 'stage-1-wetlands',
+    stage: 1,
+    name: 'Stage I Wetlands',
+    faceUrl: 'https://steamusercontent-a.akamaihd.net/ugc/2050875404517339785/F8F7FEA2B85A8CE2BD835CBBF5F77A4B38E79849/',
+    backUrl: 'https://steamusercontent-a.akamaihd.net/ugc/2050875404517339936/B154BEFDE4EF3B3CA2B9D626034F161FA6DA6476/',
+  },
+  {
+    id: 'stage-1-mountains',
+    stage: 1,
+    name: 'Stage I Mountains',
+    faceUrl: 'https://steamusercontent-a.akamaihd.net/ugc/2050875404517340223/629B5A0F14188BABE71485D645B942C68A8CC2AB/',
+    backUrl: 'https://steamusercontent-a.akamaihd.net/ugc/2050875404517339936/B154BEFDE4EF3B3CA2B9D626034F161FA6DA6476/',
+  },
+  {
+    id: 'stage-1-jungle',
+    stage: 1,
+    name: 'Stage I Jungle',
+    faceUrl: 'https://steamusercontent-a.akamaihd.net/ugc/2050875404517340394/7E4D76FA3AA24A55262C9A1C6986E6B9A10EB8F4/',
+    backUrl: 'https://steamusercontent-a.akamaihd.net/ugc/2050875404517339936/B154BEFDE4EF3B3CA2B9D626034F161FA6DA6476/',
+  },
+  {
+    id: 'stage-1-sands',
+    stage: 1,
+    name: 'Stage I Sands',
+    faceUrl: 'https://steamusercontent-a.akamaihd.net/ugc/2050875404517340724/B8182B668E564E85FA66AF8B3C14667E0D3006FA/',
+    backUrl: 'https://steamusercontent-a.akamaihd.net/ugc/2050875404517339936/B154BEFDE4EF3B3CA2B9D626034F161FA6DA6476/',
+  },
+  {
+    id: 'stage-2-coast',
+    stage: 2,
+    name: 'Stage 2 Coast',
+    faceUrl: 'https://steamusercontent-a.akamaihd.net/ugc/2050875404517341827/E8C6BC476CABC1305996359D99C0692A4F30A13F/',
+    backUrl: 'https://steamusercontent-a.akamaihd.net/ugc/2050875404517341073/C6FF3381E4EA093D5EC0C86E2B93455A98CF606A/',
+  },
+  {
+    id: 'stage-2-mountains',
+    stage: 2,
+    name: 'Stage 2 Mountains',
+    faceUrl: 'https://steamusercontent-a.akamaihd.net/ugc/2050875404517341662/D923C72218369695914AF9C4533A720300050C82/',
+    backUrl: 'https://steamusercontent-a.akamaihd.net/ugc/2050875404517341073/C6FF3381E4EA093D5EC0C86E2B93455A98CF606A/',
+  },
+  {
+    id: 'stage-2-sands',
+    stage: 2,
+    name: 'Stage 2 Sands',
+    faceUrl: 'https://steamusercontent-a.akamaihd.net/ugc/2050875404517341458/EBC99ECC0FE6F862E746D1B9B22D7B603B8FE002/',
+    backUrl: 'https://steamusercontent-a.akamaihd.net/ugc/2050875404517341073/C6FF3381E4EA093D5EC0C86E2B93455A98CF606A/',
+  },
+  {
+    id: 'stage-2-wetlands',
+    stage: 2,
+    name: 'Stage 2 Wetlands',
+    faceUrl: 'https://steamusercontent-a.akamaihd.net/ugc/2050875404517341252/725819D7DBF33E21FFAB6487D98C018276238A73/',
+    backUrl: 'https://steamusercontent-a.akamaihd.net/ugc/2050875404517341073/C6FF3381E4EA093D5EC0C86E2B93455A98CF606A/',
+  },
+  {
+    id: 'stage-2-jungle',
+    stage: 2,
+    name: 'Stage 2 Jungle',
+    faceUrl: 'https://steamusercontent-a.akamaihd.net/ugc/2050875404517340886/E1B819EB6C097350A6FA7EA85AC84AC3DD81A901/',
+    backUrl: 'https://steamusercontent-a.akamaihd.net/ugc/2050875404517341073/C6FF3381E4EA093D5EC0C86E2B93455A98CF606A/',
+  },
+  {
+    id: 'stage-3-sands-mountains',
+    stage: 3,
+    name: 'Stage 3 Sands/Mountains',
+    faceUrl: 'https://steamusercontent-a.akamaihd.net/ugc/2050875404517343260/EBC13F22204EECE39C3D3A9B2981CF8AFBCCF660/',
+    backUrl: 'https://steamusercontent-a.akamaihd.net/ugc/2050875404517342292/1ED9753B105223BF810BDAFF57E2930B62810994/',
+  },
+  {
+    id: 'stage-3-mountains-wetlands',
+    stage: 3,
+    name: 'Stage 3 Mountains/Wetlands',
+    faceUrl: 'https://steamusercontent-a.akamaihd.net/ugc/2050875404517343120/EF86B6A659385AB949BDAECC07FF152FD9ED3C73/',
+    backUrl: 'https://steamusercontent-a.akamaihd.net/ugc/2050875404517342292/1ED9753B105223BF810BDAFF57E2930B62810994/',
+  },
+  {
+    id: 'stage-3-mountains-jungles',
+    stage: 3,
+    name: 'Stage 3 Mountains/Jungles',
+    faceUrl: 'https://steamusercontent-a.akamaihd.net/ugc/2050875404517342918/34C1B033A2F13A97F086B1016E2ECEDAC284F19A/',
+    backUrl: 'https://steamusercontent-a.akamaihd.net/ugc/2050875404517342292/1ED9753B105223BF810BDAFF57E2930B62810994/',
+  },
+  {
+    id: 'stage-3-jungles-sands',
+    stage: 3,
+    name: 'Stage 3 Jungles/Sands',
+    faceUrl: 'https://steamusercontent-a.akamaihd.net/ugc/2050875404517342769/E8A6ABB261BFCCB1EB4B612985F3CB52F57547A4/',
+    backUrl: 'https://steamusercontent-a.akamaihd.net/ugc/2050875404517342292/1ED9753B105223BF810BDAFF57E2930B62810994/',
+  },
+  {
+    id: 'stage-3-sands-wetlands',
+    stage: 3,
+    name: 'Stage 3 Sands/Wetlands',
+    faceUrl: 'https://steamusercontent-a.akamaihd.net/ugc/2050875404517342624/EA303F34B17E51461EC631AE5B8688117074015E/',
+    backUrl: 'https://steamusercontent-a.akamaihd.net/ugc/2050875404517342292/1ED9753B105223BF810BDAFF57E2930B62810994/',
+  },
+  {
+    id: 'stage-3-jungles-wetlands',
+    stage: 3,
+    name: 'Stage 3 Jungles/Wetlands',
+    faceUrl: 'https://steamusercontent-a.akamaihd.net/ugc/2050875404517341990/ECF838494E8BE46F8380D740F7D4B83CDD070BA5/',
+    backUrl: 'https://steamusercontent-a.akamaihd.net/ugc/2050875404517342292/1ED9753B105223BF810BDAFF57E2930B62810994/',
+  },
+];
+
+export const DEFAULT_INVADER_DECK: InvaderCardDefinition[] = [...INVADER_CARDS];
+
+export const createInvaderSetupDeck = (): {
+  deck: InvaderCardDefinition[];
+  removed: InvaderCardDefinition[];
+} => {
+  const stage1 = shuffleCards(INVADER_CARDS.filter((card) => card.stage === 1));
+  const stage2 = shuffleCards(INVADER_CARDS.filter((card) => card.stage === 2));
+  const stage3 = shuffleCards(INVADER_CARDS.filter((card) => card.stage === 3));
+
+  const removed: InvaderCardDefinition[] = [];
+
+  const trimmedStage1 = [...stage1];
+  const trimmedStage2 = [...stage2];
+  const trimmedStage3 = [...stage3];
+
+  const removedStage1 = trimmedStage1.pop();
+  const removedStage2 = trimmedStage2.pop();
+  const removedStage3 = trimmedStage3.pop();
+
+  if (removedStage1) removed.push(removedStage1);
+  if (removedStage2) removed.push(removedStage2);
+  if (removedStage3) removed.push(removedStage3);
+
+  return {
+    deck: [...trimmedStage1, ...trimmedStage2, ...trimmedStage3],
+    removed,
+  };
+};

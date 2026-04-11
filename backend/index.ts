@@ -4,15 +4,34 @@ import cors from 'cors';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import { Pool } from 'pg';
-import { WebSocketServer } from 'ws';
+import { WebSocketServer, WebSocket } from 'ws';
+import type { IncomingMessage } from 'http';
 import * as Y from 'yjs';
 import * as syncProtocol from 'y-protocols/sync';
 import * as awarenessProtocol from 'y-protocols/awareness';
 import * as encoding from 'lib0/encoding';
 import * as decoding from 'lib0/decoding';
+import { getAdversary } from './data/adversaries.js';
+import { calculateTerrorLevel, applyFearModifier, initializeFearState } from './utils/fearUtils.js';
+import { executeEvent } from './utils/eventUtils.js';
+import { createFearDeck, createInvaderDeck, getRandomLand } from './utils/deckUtils.js';
 
 type Request = express.Request;
 type Response = express.Response;
+type GameStatus = 'active' | 'completed' | 'archived';
+
+type GameDto = {
+  id: string;
+  name: string;
+  ownerId: number;
+  playerIds: number[];
+  playerCount: number;
+  status: GameStatus | string;
+  currentPhase: string;
+  turn: number;
+  discordWebhookUrl: string | null;
+  createdAt: string;
+};
 
 // Config
 const PORT = parseInt(process.env.PORT || '3001');
@@ -22,10 +41,18 @@ const DATABASE_URL = process.env.DATABASE_URL || 'postgres://postgres:postgres@l
 // Database pool
 const pool = new Pool({ connectionString: DATABASE_URL });
 
+const ensureDatabaseSchema = async () => {
+  await pool.query('ALTER TABLE games ADD COLUMN IF NOT EXISTS name VARCHAR(120)');
+};
+
 // Express setup
 const app = express();
 app.use(cors({ origin: process.env.FRONTEND_URL || 'http://localhost:5173' }));
 app.use(express.json());
+
+ensureDatabaseSchema().catch((error) => {
+  console.error('Schema initialization failed:', error);
+});
 
 // In-memory game documents (Y.Doc per game)
 const gameDocs = new Map<string, Y.Doc>();
@@ -48,6 +75,216 @@ type RoomState = {
 
 const roomStates = new Map<string, RoomState>();
 
+type TurnPhase = 'growth' | 'fast' | 'event' | 'invader' | 'slow';
+
+const TURN_PHASES: TurnPhase[] = ['growth', 'fast', 'event', 'invader', 'slow'];
+
+const FEAR_PER_PLAYER = 4;
+const MAX_PLAYERS_PER_GAME = 6;
+const BOARD_LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
+
+const getSafeNumber = (value: unknown, fallback: number) => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  return fallback;
+};
+
+const clampMin = (value: number, min: number) => {
+  return value < min ? min : value;
+};
+
+const getTerrorLevelFromFearCards = (fearCardsEarned: number) => {
+  // Fallback function - uses default 3/3/3 thresholds
+  // For adversary-specific logic, use fearUtils.calculateTerrorLevel instead
+  if (fearCardsEarned >= 9) return 4;
+  if (fearCardsEarned >= 6) return 3;
+  if (fearCardsEarned >= 3) return 2;
+  return 1;
+};
+
+const ensureNestedMap = (parent: Y.Map<unknown>, key: string) => {
+  const existing = parent.get(key);
+  if (existing instanceof Y.Map) {
+    return existing as Y.Map<unknown>;
+  }
+
+  const created = new Y.Map<unknown>();
+  parent.set(key, created);
+  return created;
+};
+
+const ensureGameDefaults = (gameMap: Y.Map<unknown>, playerCountFallback: number, adversaryId?: string) => {
+  const legacyRound = getSafeNumber(gameMap.get('round'), 1);
+  const turn = getSafeNumber(gameMap.get('turn'), legacyRound);
+  gameMap.set('turn', clampMin(turn, 1));
+
+  const rawPhase = gameMap.get('currentPhase');
+  const normalizedPhase =
+    typeof rawPhase === 'string' && TURN_PHASES.includes(rawPhase as TurnPhase)
+      ? (rawPhase as TurnPhase)
+      : 'growth';
+  gameMap.set('currentPhase', normalizedPhase);
+
+  if (!gameMap.has('boards')) {
+    gameMap.set('boards', new Y.Map());
+  }
+
+  const safePlayerFallback = clampMin(playerCountFallback, 1);
+  const playerCount = clampMin(getSafeNumber(gameMap.get('playerCount'), safePlayerFallback), 1);
+  gameMap.set('playerCount', playerCount);
+  gameMap.set('fearThreshold', FEAR_PER_PLAYER * playerCount);
+
+  // Initialize gameConfig with adversary and fear thresholds
+  let gameConfig = gameMap.get('gameConfig');
+  if (!(gameConfig instanceof Y.Map)) {
+    gameConfig = new Y.Map();
+    gameMap.set('gameConfig', gameConfig);
+  }
+
+  // Set adversary if provided, or use existing, or default to Brandenburg-Prussia
+  let adversary = null;
+  let selectedAdversaryId = adversaryId || (gameConfig as Y.Map<unknown>).get('adversary') as string || 'brandenburg-prussia';
+  adversary = getAdversary(selectedAdversaryId);
+  
+  if (!adversary) {
+    adversary = getAdversary('brandenburg-prussia')!;
+    selectedAdversaryId = 'brandenburg-prussia';
+  }
+
+  (gameConfig as Y.Map<unknown>).set('adversary', selectedAdversaryId);
+  (gameConfig as Y.Map<unknown>).set('fearThresholds', [...adversary.fearThresholds]);
+  (gameConfig as Y.Map<unknown>).set('initialInvaderCardCount', adversary.initialInvaderCardCount);
+
+  // Initialize fear state based on adversary thresholds
+  const fearCardsEarned = clampMin(getSafeNumber(gameMap.get('fearCardsEarned'), 0), 0);
+  const terrorLevel = calculateTerrorLevel(fearCardsEarned, adversary.fearThresholds);
+  gameMap.set('fearCardsEarned', fearCardsEarned);
+  gameMap.set('terrorLevel', terrorLevel);
+  gameMap.set('fearPool', clampMin(getSafeNumber(gameMap.get('fearPool'), 0), 0));
+
+  if (!gameMap.has('blightCard')) {
+    gameMap.set('blightCard', 'Unknown Blight Card');
+  }
+  const defaultBlight = playerCount * 2 + 1;
+  const blightCount = clampMin(getSafeNumber(gameMap.get('blightCount'), defaultBlight), 0);
+  gameMap.set('blightCount', blightCount);
+
+  // Update invader track to use lands instead of counts
+  const invaderTrack = ensureNestedMap(gameMap, 'invaderTrack');
+  
+  // Initialize invader lands arrays if they don't exist
+  if (!(invaderTrack.get('exploredLands') instanceof Y.Array)) {
+    invaderTrack.set('exploredLands', new Y.Array());
+  }
+  if (!(invaderTrack.get('buildLands') instanceof Y.Array)) {
+    invaderTrack.set('buildLands', new Y.Array());
+  }
+  if (!(invaderTrack.get('ravageLands') instanceof Y.Array)) {
+    invaderTrack.set('ravageLands', new Y.Array());
+  }
+
+  // Keep legacy count fields for compatibility
+  const exploreLands = invaderTrack.get('exploredLands') as Y.Array<number>;
+  const buildLands = invaderTrack.get('buildLands') as Y.Array<number>;
+  const ravageLands = invaderTrack.get('ravageLands') as Y.Array<number>;
+  
+  invaderTrack.set('explore', exploreLands.length);
+  invaderTrack.set('build', buildLands.length);
+  invaderTrack.set('ravage', ravageLands.length);
+
+  const decks = ensureNestedMap(gameMap, 'decks');
+  decks.set('invader', clampMin(getSafeNumber(decks.get('invader'), adversary.initialInvaderCardCount), 0));
+  decks.set('fear', adversary.fearThresholds[adversary.fearThresholds.length - 1] || 9);
+  decks.set('event', clampMin(getSafeNumber(decks.get('event'), 0), 0));
+
+  const discards = ensureNestedMap(gameMap, 'discards');
+  if (!(discards.get('invader') instanceof Y.Array)) {
+    discards.set('invader', new Y.Array());
+  }
+  if (!(discards.get('fear') instanceof Y.Array)) {
+    discards.set('fear', new Y.Array());
+  }
+  if (!(discards.get('event') instanceof Y.Array)) {
+    discards.set('event', new Y.Array());
+  }
+  if (!(discards.get('blight') instanceof Y.Array)) {
+    discards.set('blight', new Y.Array());
+  }
+};
+
+const getInitialPlayerCountFromDb = async (gameId: string) => {
+  const gameIdNum = parseInt(gameId, 10);
+  if (Number.isNaN(gameIdNum)) {
+    return 1;
+  }
+
+  try {
+    const result = await pool.query('SELECT player_ids FROM games WHERE id = $1', [gameIdNum]);
+    if (result.rows.length === 0) {
+      return 1;
+    }
+    const playerIds = result.rows[0]?.player_ids;
+    if (Array.isArray(playerIds) && playerIds.length > 0) {
+      return playerIds.length;
+    }
+  } catch (err) {
+    console.error('Error reading player count from DB:', err);
+  }
+
+  return 1;
+};
+
+const toInt = (value: unknown): number | null => {
+  if (typeof value === 'number' && Number.isInteger(value)) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const parsed = parseInt(value, 10);
+    return Number.isNaN(parsed) ? null : parsed;
+  }
+  return null;
+};
+
+const normalizePlayerIds = (playerIds: unknown): number[] => {
+  if (!Array.isArray(playerIds)) {
+    return [];
+  }
+
+  const ids = playerIds
+    .map((value) => toInt(value))
+    .filter((value): value is number => value !== null);
+
+  return Array.from(new Set(ids));
+};
+
+const mapGameRowToDto = (row: Record<string, any>): GameDto => {
+  const ids = normalizePlayerIds(row.player_ids);
+  return {
+    id: String(row.id),
+    name: (typeof row.name === 'string' && row.name.trim()) || `Game ${row.id}`,
+    ownerId: toInt(row.owner_id) ?? 0,
+    playerIds: ids,
+    playerCount: ids.length,
+    status: (row.status as GameStatus) || 'active',
+    currentPhase: (row.current_phase as string) || 'growth',
+    turn: toInt(row.round) ?? 1,
+    discordWebhookUrl: typeof row.discord_webhook_url === 'string' ? row.discord_webhook_url : null,
+    createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
+  };
+};
+
+const getNextBoardId = (existingBoardIds: string[]) => {
+  for (let i = 0; i < BOARD_LETTERS.length; i++) {
+    const candidate = BOARD_LETTERS[i] ?? `P${i + 1}`;
+    if (!existingBoardIds.includes(candidate)) {
+      return candidate;
+    }
+  }
+
+  return `P${existingBoardIds.length + 1}`;
+};
+
 // Helper to save game state to database
 const saveGameStateToDb = async (gameId: string, ydoc: Y.Doc) => {
   try {
@@ -60,10 +297,37 @@ const saveGameStateToDb = async (gameId: string, ydoc: Y.Doc) => {
     const gameMap = ydoc.getMap('game');
     const boards = gameMap.get('boards') as Y.Map<any>;
     
+    const invaderTrack = gameMap.get('invaderTrack') as Y.Map<unknown> | undefined;
+    const decks = gameMap.get('decks') as Y.Map<unknown> | undefined;
+    const discards = gameMap.get('discards') as Y.Map<unknown> | undefined;
+
     const state = {
-      currentPhase: gameMap.get('currentPhase') || 'growth',
-      round: gameMap.get('round') || 1,
-      boards: {} as any,
+      currentPhase: (gameMap.get('currentPhase') as string) || 'growth',
+      turn: getSafeNumber(gameMap.get('turn'), getSafeNumber(gameMap.get('round'), 1)),
+      playerCount: clampMin(getSafeNumber(gameMap.get('playerCount'), 1), 1),
+      fearPool: clampMin(getSafeNumber(gameMap.get('fearPool'), 0), 0),
+      fearCardsEarned: clampMin(getSafeNumber(gameMap.get('fearCardsEarned'), 0), 0),
+      terrorLevel: clampMin(getSafeNumber(gameMap.get('terrorLevel'), 1), 1),
+      fearThreshold: clampMin(getSafeNumber(gameMap.get('fearThreshold'), FEAR_PER_PLAYER), FEAR_PER_PLAYER),
+      blightCard: (gameMap.get('blightCard') as string) || 'Unknown Blight Card',
+      blightCount: clampMin(getSafeNumber(gameMap.get('blightCount'), 3), 0),
+      invaderTrack: {
+        ravage: clampMin(getSafeNumber(invaderTrack?.get('ravage'), 0), 0),
+        build: clampMin(getSafeNumber(invaderTrack?.get('build'), 0), 0),
+        explore: clampMin(getSafeNumber(invaderTrack?.get('explore'), 1), 0),
+      },
+      decks: {
+        invader: clampMin(getSafeNumber(decks?.get('invader'), 12), 0),
+        fear: clampMin(getSafeNumber(decks?.get('fear'), 9), 0),
+        event: clampMin(getSafeNumber(decks?.get('event'), 0), 0),
+      },
+      discards: {
+        invader: clampMin(getSafeNumber(discards?.get('invader'), 0), 0),
+        fear: clampMin(getSafeNumber(discards?.get('fear'), 0), 0),
+        event: clampMin(getSafeNumber(discards?.get('event'), 0), 0),
+        blight: clampMin(getSafeNumber(discards?.get('blight'), 0), 0),
+      },
+      boards: {} as Record<string, unknown>,
     };
 
     // Serialize boards
@@ -131,6 +395,44 @@ const loadGameStateFromDb = async (gameId: string, ydoc: Y.Doc) => {
       const state = result.rows[0].board_state;
       console.log(`[DB] Loaded state:`, JSON.stringify(state).substring(0, 200));
       
+      if (state && typeof state === 'object') {
+        const gameMap = ydoc.getMap('game');
+
+        if (typeof state.currentPhase === 'string') {
+          gameMap.set('currentPhase', state.currentPhase);
+        }
+
+        const loadedTurn = getSafeNumber(state.turn, getSafeNumber(state.round, 1));
+        gameMap.set('turn', clampMin(loadedTurn, 1));
+
+        gameMap.set('playerCount', clampMin(getSafeNumber(state.playerCount, 1), 1));
+        gameMap.set('fearPool', clampMin(getSafeNumber(state.fearPool, 0), 0));
+        gameMap.set('fearCardsEarned', clampMin(getSafeNumber(state.fearCardsEarned, 0), 0));
+        gameMap.set('terrorLevel', clampMin(getSafeNumber(state.terrorLevel, 1), 1));
+        gameMap.set('fearThreshold', clampMin(getSafeNumber(state.fearThreshold, FEAR_PER_PLAYER), FEAR_PER_PLAYER));
+
+        if (typeof state.blightCard === 'string') {
+          gameMap.set('blightCard', state.blightCard);
+        }
+        gameMap.set('blightCount', clampMin(getSafeNumber(state.blightCount, 3), 0));
+
+        const invaderTrack = ensureNestedMap(gameMap, 'invaderTrack');
+        invaderTrack.set('ravage', clampMin(getSafeNumber(state.invaderTrack?.ravage, 0), 0));
+        invaderTrack.set('build', clampMin(getSafeNumber(state.invaderTrack?.build, 0), 0));
+        invaderTrack.set('explore', clampMin(getSafeNumber(state.invaderTrack?.explore, 1), 0));
+
+        const decks = ensureNestedMap(gameMap, 'decks');
+        decks.set('invader', clampMin(getSafeNumber(state.decks?.invader, 12), 0));
+        decks.set('fear', clampMin(getSafeNumber(state.decks?.fear, 9), 0));
+        decks.set('event', clampMin(getSafeNumber(state.decks?.event, 0), 0));
+
+        const discards = ensureNestedMap(gameMap, 'discards');
+        discards.set('invader', clampMin(getSafeNumber(state.discards?.invader, 0), 0));
+        discards.set('fear', clampMin(getSafeNumber(state.discards?.fear, 0), 0));
+        discards.set('event', clampMin(getSafeNumber(state.discards?.event, 0), 0));
+        discards.set('blight', clampMin(getSafeNumber(state.discards?.blight, 0), 0));
+      }
+
       if (state && state.boards) {
         console.log(`[DB] Found ${Object.keys(state.boards).length} boards in state`);
         const gameMap = ydoc.getMap('game');
@@ -192,16 +494,12 @@ const getGameDoc = async (gameId: string) => {
     
     // Initialize game structure
     const gameMap = ydoc.getMap('game');
-    if (!gameMap.has('currentPhase')) {
-      gameMap.set('currentPhase', 'growth');
-      gameMap.set('round', 1);
-    }
-    if (!gameMap.has('boards')) {
-      gameMap.set('boards', new Y.Map());
-    }
+    const initialPlayerCount = await getInitialPlayerCountFromDb(gameId);
+    ensureGameDefaults(gameMap, initialPlayerCount);
     
     // Load state from database
     await loadGameStateFromDb(gameId, ydoc);
+    ensureGameDefaults(gameMap, initialPlayerCount);
     
     // Save to database on updates (debounced)
     let saveTimeout: any = null;
@@ -378,8 +676,10 @@ app.get('/api/auth/me', verifyToken, async (req: Request, res: Response) => {
 // Get all games (list)
 app.get('/api/games', verifyToken, async (req: Request, res: Response) => {
   try {
-    const result = await pool.query('SELECT * FROM games ORDER BY created_at DESC LIMIT 50');
-    res.json(result.rows);
+    const result = await pool.query(
+      "SELECT * FROM games WHERE status = 'active' ORDER BY created_at DESC LIMIT 50"
+    );
+    res.json(result.rows.map((row: Record<string, any>) => mapGameRowToDto(row)));
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -388,18 +688,31 @@ app.get('/api/games', verifyToken, async (req: Request, res: Response) => {
 // Create a new game
 app.post('/api/games', verifyToken, async (req: Request, res: Response) => {
   try {
-    const { name } = req.body;
+    const { name, discordWebhookUrl, adversaryId } = req.body;
     const userId = (req as any).user.id;
 
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'Game name is required' });
     }
 
+    const normalizedWebhook =
+      typeof discordWebhookUrl === 'string' && discordWebhookUrl.trim().length > 0
+        ? discordWebhookUrl.trim()
+        : null;
+
     const result = await pool.query(
-      'INSERT INTO games (owner_id, name, player_ids) VALUES ($1, $2, ARRAY[$1::integer]) RETURNING *',
-      [userId, name]
+      'INSERT INTO games (owner_id, name, player_ids, discord_webhook_url) VALUES ($1, $2, ARRAY[$1::integer], $3) RETURNING *',
+      [userId, name.trim(), normalizedWebhook]
     );
-    res.status(201).json(result.rows[0]);
+
+    const createdGame = result.rows[0];
+    const ydoc = await getGameDoc(String(createdGame.id));
+    initializePlayerBoard(ydoc, userId, 'A');
+    // Pass adversaryId if provided
+    const selectedAdversaryId = typeof adversaryId === 'string' ? adversaryId : undefined;
+    ensureGameDefaults(ydoc.getMap('game'), 1, selectedAdversaryId);
+
+    res.status(201).json(mapGameRowToDto(createdGame));
   } catch (err: any) {
     res.status(400).json({ error: err.message });
   }
@@ -413,7 +726,15 @@ app.get('/api/games/:id/state', verifyToken, async (req: Request, res: Response)
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Game not found' });
     }
-    res.json(result.rows[0]);
+
+    const game = result.rows[0];
+    const userId = (req as any).user.id;
+    const playerIds = normalizePlayerIds(game.player_ids);
+    if (!playerIds.includes(userId)) {
+      return res.status(403).json({ error: 'You are not a member of this game' });
+    }
+
+    res.json(mapGameRowToDto(game));
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -422,7 +743,11 @@ app.get('/api/games/:id/state', verifyToken, async (req: Request, res: Response)
 // Join a game
 app.post('/api/games/:id/join', verifyToken, async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
+    const rawId = req.params.id;
+    const id = Array.isArray(rawId) ? rawId[0] : rawId;
+    if (!id) {
+      return res.status(400).json({ error: 'Game id is required' });
+    }
     const userId = (req as any).user.id;
 
     const gameResult = await pool.query('SELECT * FROM games WHERE id = $1', [id]);
@@ -430,25 +755,211 @@ app.post('/api/games/:id/join', verifyToken, async (req: Request, res: Response)
       return res.status(404).json({ error: 'Game not found' });
     }
 
-    const game = gameResult.rows[0];
-    const playerIds = game.player_ids || [];
-    const playerIndex = playerIds.length;
-    
+    const game = gameResult.rows[0] as Record<string, any>;
+    const playerIds = normalizePlayerIds(game.player_ids);
+
+    if (!playerIds.includes(userId) && playerIds.length >= MAX_PLAYERS_PER_GAME) {
+      return res.status(409).json({ error: `Game is full (max ${MAX_PLAYERS_PER_GAME} players)` });
+    }
+
+    let updatedPlayerIds = playerIds;
     if (!playerIds.includes(userId)) {
-      playerIds.push(userId);
+      updatedPlayerIds = [...playerIds, userId];
       await pool.query(
         'UPDATE games SET player_ids = $1::integer[] WHERE id = $2',
-        [playerIds, id]
+        [updatedPlayerIds, id]
       );
     }
 
-    // Initialize board for this player in Yjs
-    const ydoc = await getGameDoc(id.toString());
-    const boardLetters = 'ABCDEFGHIJ'.split('');
-    const boardId = boardLetters[playerIndex] || `P${playerIndex}`;
-    initializePlayerBoard(ydoc, userId, boardId);
+    // Initialize board for this player in Yjs if missing.
+    const ydoc = await getGameDoc(id);
+    const gameMap = ydoc.getMap('game');
+    const boards = gameMap.get('boards') as Y.Map<any>;
 
-    res.json({ message: 'Joined game', boardId });
+    let boardIdForUser: string | undefined;
+    const existingBoardIds: string[] = [];
+    if (boards) {
+      boards.forEach((boardData: any, boardId: string) => {
+        existingBoardIds.push(boardId);
+        if (toInt(boardData.get('playerId')) === userId) {
+          boardIdForUser = boardId;
+        }
+      });
+    }
+
+    if (!boardIdForUser) {
+      const nextBoardId = getNextBoardId(existingBoardIds);
+      initializePlayerBoard(ydoc, userId, nextBoardId);
+      boardIdForUser = nextBoardId;
+    }
+
+    ensureGameDefaults(gameMap, updatedPlayerIds.length);
+    gameMap.set('playerCount', updatedPlayerIds.length);
+    gameMap.set('fearThreshold', FEAR_PER_PLAYER * updatedPlayerIds.length);
+
+    const refreshedGame = await pool.query('SELECT * FROM games WHERE id = $1', [id]);
+    res.json({
+      message: 'Joined game',
+      boardId: boardIdForUser,
+      game: mapGameRowToDto(refreshedGame.rows[0]),
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Leave a game
+app.post('/api/games/:id/leave', verifyToken, async (req: Request, res: Response) => {
+  try {
+    const rawId = req.params.id;
+    const id = Array.isArray(rawId) ? rawId[0] : rawId;
+    if (!id) {
+      return res.status(400).json({ error: 'Game id is required' });
+    }
+
+    const userId = (req as any).user.id;
+    const gameResult = await pool.query('SELECT * FROM games WHERE id = $1', [id]);
+    if (gameResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Game not found' });
+    }
+
+    const game = gameResult.rows[0] as Record<string, any>;
+    const currentPlayerIds = normalizePlayerIds(game.player_ids);
+    if (!currentPlayerIds.includes(userId)) {
+      return res.status(200).json({ message: 'User is not part of this game' });
+    }
+
+    const updatedPlayerIds = currentPlayerIds.filter((idValue) => idValue !== userId);
+    const nextStatus = updatedPlayerIds.length === 0 ? 'completed' : game.status;
+
+    const updateResult = await pool.query(
+      'UPDATE games SET player_ids = $1::integer[], status = $2 WHERE id = $3 RETURNING *',
+      [updatedPlayerIds, nextStatus, id]
+    );
+
+    const ydoc = await getGameDoc(id);
+    const gameMap = ydoc.getMap('game');
+    const boards = gameMap.get('boards') as Y.Map<any> | undefined;
+    if (boards) {
+      const boardIdsToDelete: string[] = [];
+      boards.forEach((boardData: any, boardId: string) => {
+        if (toInt(boardData.get('playerId')) === userId) {
+          boardIdsToDelete.push(boardId);
+        }
+      });
+      boardIdsToDelete.forEach((boardId) => boards.delete(boardId));
+    }
+
+    ensureGameDefaults(gameMap, Math.max(1, updatedPlayerIds.length));
+    gameMap.set('playerCount', Math.max(1, updatedPlayerIds.length));
+    gameMap.set('fearThreshold', FEAR_PER_PLAYER * Math.max(1, updatedPlayerIds.length));
+
+    res.json({
+      message: 'Left game',
+      game: mapGameRowToDto(updateResult.rows[0]),
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get list of adversaries
+app.get('/api/adversaries', (req: Request, res: Response) => {
+  try {
+    const { ADVERSARIES } = require('./data/adversaries');
+    const adversaries = Object.values(ADVERSARIES).map((adv: any) => ({
+      id: adv.id,
+      name: adv.name,
+      difficulty: adv.difficulty,
+      description: adv.description,
+      fearThresholds: adv.fearThresholds,
+    }));
+    res.json(adversaries);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Execute an event card
+app.post('/api/games/:id/event-execute', verifyToken, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params as { id: string };
+    const { eventId } = req.body;
+    const userId = (req as any).user.id;
+
+    // Verify user is in the game
+    const gameResult = await pool.query('SELECT * FROM games WHERE id = $1', [id]);
+    if (gameResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Game not found' });
+    }
+
+    const game = gameResult.rows[0];
+    const playerIds = normalizePlayerIds(game.player_ids);
+    if (!playerIds.includes(userId)) {
+      return res.status(403).json({ error: 'You are not a member of this game' });
+    }
+
+    if (!eventId || typeof eventId !== 'string') {
+      return res.status(400).json({ error: 'Event ID is required' });
+    }
+
+    const ydoc = await getGameDoc(id);
+    const gameMap = ydoc.getMap('game');
+
+    const result = executeEvent(gameMap, eventId);
+
+    if (!result.success) {
+      return res.status(400).json({ error: result.message });
+    }
+
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Draw a land to explore
+app.post('/api/games/:id/invader-draw-to-explore', verifyToken, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params as { id: string };
+    const userId = (req as any).user.id;
+
+    // Verify user is in the game
+    const gameResult = await pool.query('SELECT * FROM games WHERE id = $1', [id]);
+    if (gameResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Game not found' });
+    }
+
+    const game = gameResult.rows[0];
+    const playerIds = normalizePlayerIds(game.player_ids);
+    if (!playerIds.includes(userId)) {
+      return res.status(403).json({ error: 'You are not a member of this game' });
+    }
+
+    const ydoc = await getGameDoc(id);
+    const gameMap = ydoc.getMap('game');
+    const invaderTrack = gameMap.get('invaderTrack') as Y.Map<unknown>;
+
+    // Get or create explore lands array
+    let exploreLands = invaderTrack?.get('exploredLands') as Y.Array<number>;
+    if (!(exploreLands instanceof Y.Array)) {
+      exploreLands = new Y.Array();
+      invaderTrack?.set('exploredLands', exploreLands);
+    }
+
+    // Draw a random land
+    const drawnLand = getRandomLand();
+    exploreLands.push([drawnLand]);
+
+    // Update the count
+    invaderTrack?.set('explore', exploreLands.length);
+
+    res.json({
+      success: true,
+      drawnLand,
+      exploreLands: exploreLands.toArray(),
+      message: `Drew land ${drawnLand} to explore`,
+    });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -468,7 +979,7 @@ const server = app.listen(PORT, () => {
 const wss = new WebSocketServer({ server });
 let clientIdCounter = 0;
 
-wss.on('connection', async (ws: WebSocket, req) => {
+wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
   try {
     const url = req.url || '';
     const roomName = getRoomNameFromUrl(url);
@@ -549,7 +1060,7 @@ wss.on('connection', async (ws: WebSocket, req) => {
       cleanupRoomStateIfEmpty(roomName);
     });
 
-    ws.on('error', (error) => {
+    ws.on('error', (error: Error) => {
       console.error(`[WS] WebSocket error for client ${clientId}:`, error);
     });
 

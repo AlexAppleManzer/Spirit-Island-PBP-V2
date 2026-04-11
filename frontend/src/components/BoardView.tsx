@@ -45,7 +45,7 @@ interface LandBoundsAsset {
 
 const VIEWPORT_WIDTH = 1200;
 const VIEWPORT_HEIGHT = 800;
-const STAGE_PADDING = 250;
+const STAGE_PADDING = 40;
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 2.5;
 const ZOOM_STEP = 0.1;
@@ -161,7 +161,7 @@ function getDefaultDamage(_type: string): number {
 }
 
 const SPIRIT_TOKEN_TYPES = new Set([
-  'badlands', 'beast', 'deeps', 'disease', 'quake', 'vitality', 'wilds', 'strife',
+  'badlands', 'beast', 'deeps', 'disease', 'quake', 'vitality', 'wilds', 'strife', 'blight',
 ]);
 
 function pieceHasDamage(type: string): boolean {
@@ -197,6 +197,7 @@ const BoardView: React.FC<BoardViewProps> = ({ docRef }) => {
   const [quakeImage] = useImage('/TokenQuake.png');
   const [vitalityImage] = useImage('/TokenVitality.png');
   const [wildsImage] = useImage('/TokenWilds.png');
+  const [blightImage] = useImage('/Blight.png');
   
   const [boards, setBoards] = useState<Map<string, any>>(new Map());
   const [landBounds, setLandBounds] = useState<Record<number, LandBounds> | null>(null);
@@ -911,6 +912,7 @@ const BoardView: React.FC<BoardViewProps> = ({ docRef }) => {
       vitality: vitalityImage,
       wilds: wildsImage,
       strife: strifeTokenImage,
+      blight: blightImage,
     };
     return imageMap[type];
   };
@@ -1099,7 +1101,7 @@ const BoardView: React.FC<BoardViewProps> = ({ docRef }) => {
           draggingBoardId || isPanningView
             ? 'cursor-grabbing'
             : 'cursor-grab'
-        } ${draggedPieceType ? 'bg-blue-100' : 'bg-gray-50'}`}
+        } ${draggedPieceType ? 'bg-blue-100' : 'bg-gray-50'} hide-scrollbar`}
         onDragOver={handleDragOver}
         onDrop={handleDrop}
         onWheel={(e) => {
@@ -1107,7 +1109,15 @@ const BoardView: React.FC<BoardViewProps> = ({ docRef }) => {
           const direction = e.deltaY > 0 ? -1 : 1;
           updateZoomAtPointer(zoom + direction * ZOOM_STEP, e.clientX, e.clientY);
         }}
-        style={{ width: VIEWPORT_WIDTH, height: VIEWPORT_HEIGHT, position: 'relative', display: 'block', overflow: 'auto' }}
+        style={{
+          width: VIEWPORT_WIDTH,
+          height: VIEWPORT_HEIGHT,
+          position: 'relative',
+          display: 'block',
+          overflow: 'auto',
+          scrollbarWidth: 'none',
+          msOverflowStyle: 'none',
+        }}
         onAuxClick={(e) => {
           if (e.button === 1) {
             e.preventDefault();
@@ -1535,6 +1545,7 @@ const BoardView: React.FC<BoardViewProps> = ({ docRef }) => {
           {([
             { type: 'badlands', src: '/TokenBadlands.png', label: 'Badlands', img: badlandsImage },
             { type: 'beast', src: '/TokenBeasts.png', label: 'Beast', img: beastsImage },
+            { type: 'blight', src: '/Blight.png', label: 'Blight', img: blightImage },
             { type: 'disease', src: '/TokenDisease.png', label: 'Disease', img: diseaseImage },
             { type: 'wilds', src: '/TokenWilds.png', label: 'Wilds', img: wildsImage },
             { type: 'strife', src: '/TokenStrife.png', label: 'Strife', img: strifeTokenImage },

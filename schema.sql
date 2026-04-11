@@ -10,6 +10,7 @@ CREATE TABLE users (
 -- Games table
 CREATE TABLE games (
   id SERIAL PRIMARY KEY,
+  name VARCHAR(120) NOT NULL,
   owner_id INTEGER REFERENCES users(id),
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   player_ids INTEGER[] DEFAULT '{}',
