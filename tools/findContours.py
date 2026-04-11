@@ -66,7 +66,7 @@ def find_lands(image_path, output_json, output_preview):
     top_regions = sorted_regions[:9]
     
     stage_width = 800
-    stage_height = 480
+    stage_height = int(round(stage_width * orig_height / orig_width))
     scale_x = stage_width / orig_width
     scale_y = stage_height / orig_height
     

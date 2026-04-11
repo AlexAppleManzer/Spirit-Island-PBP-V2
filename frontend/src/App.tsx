@@ -3,6 +3,7 @@ import * as Y from 'yjs';
 import { WebsocketProvider } from 'y-websocket';
 import BoardView from './components/BoardView';
 import PieceEditor from './components/PieceEditor';
+import BoardPage from './pages/BoardPage';
 
 const BACKEND_URL = 'http://localhost:3001';
 
@@ -35,12 +36,6 @@ function App() {
   const [games, setGames] = useState<Game[]>([]);
   const [newGameName, setNewGameName] = useState('');
   const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
-  const [selectedPiece, setSelectedPiece] = useState<string | null>(null);
-  const [gameState, setGameState] = useState<Record<string, unknown> | null>(null);
-  const [roomName, setRoomName] = useState<string | null>(null);
-  const [wsConnected, setWsConnected] = useState(false);
-  const docRef = useRef<Y.Doc | null>(null);
-  const providerRef = useRef<WebsocketProvider | null>(null);
 
   const authHeaders = useMemo(() => {
     return token ? { Authorization: `Bearer ${token}` } : undefined;
@@ -78,67 +73,11 @@ function App() {
     fetchGames();
   }, [token, authHeaders]);
 
-  useEffect(() => {
-    if (!token || !selectedGameId) {
-      setGameState(null);
-      return;
-    }
-
-    const fetchGameState = async () => {
-      const response = await fetch(`${BACKEND_URL}/api/games/${selectedGameId}/state`, {
-        headers: { 'Content-Type': 'application/json', ...(authHeaders ?? {}) },
-      });
-      if (response.ok) {
-        const data = await response.json();
-        setGameState(data);
-      }
-    };
-
-    fetchGameState();
-  }, [token, selectedGameId, authHeaders]);
-
-  useEffect(() => {
-    if (!roomName) {
-      setWsConnected(false);
-      if (providerRef.current) {
-        providerRef.current.destroy();
-        providerRef.current = null;
-      }
-      if (docRef.current) {
-        docRef.current.destroy();
-        docRef.current = null;
-      }
-      return;
-    }
-
-    const doc = new Y.Doc();
-    const provider = new WebsocketProvider('ws://localhost:3001', roomName, doc);
-    docRef.current = doc;
-    providerRef.current = provider;
-    setWsConnected(provider.wsconnected);
-
-    const statusHandler = () => {
-      setWsConnected(provider.wsconnected);
-    };
-
-    provider.on('status', statusHandler);
-    provider.connect();
-
-    return () => {
-      provider.off('status', statusHandler);
-      provider.destroy();
-      doc.destroy();
-      providerRef.current = null;
-      docRef.current = null;
-    };
-  }, [roomName]);
-
   const clearAuth = () => {
     setToken(null);
     setUser(null);
     localStorage.removeItem('authToken');
     setSelectedGameId(null);
-    setRoomName(null);
     setGames([]);
   };
 
@@ -215,7 +154,6 @@ function App() {
     }
 
     setSelectedGameId(gameId);
-    setRoomName(`game-${gameId}`);
   };
 
   if (!token) {
@@ -278,6 +216,23 @@ function App() {
     );
   }
 
+  // Show board page if a game is selected
+  if (selectedGameId && games.length > 0) {
+    const selectedGame = games.find((g) => g.id === selectedGameId);
+    if (selectedGame) {
+      return (
+        <BoardPage
+          gameId={selectedGameId}
+          game={selectedGame}
+          onBack={() => {
+            setSelectedGameId(null);
+          }}
+        />
+      );
+    }
+  }
+
+  // Show lobby
   return (
     <div className="min-h-screen bg-slate-100 p-6">
       <div className="mx-auto w-full max-w-6xl space-y-6">
@@ -338,32 +293,6 @@ function App() {
                 ))}
               </div>
             </div>
-          </div>
-
-          <div className="rounded-xl bg-white p-6 shadow">
-            <div className="flex flex-wrap items-center justify-between gap-4">
-              <div>
-                <h2 className="text-lg font-semibold">Game room</h2>
-                <p className="text-sm text-slate-500">
-                  {selectedGameId ? `Connected to ${selectedGameId}` : 'Join a game to connect.'}
-                </p>
-              </div>
-              <div className="rounded-full border px-3 py-1 text-sm">
-                {wsConnected ? 'WebSocket connected' : 'Disconnected'}
-              </div>
-            </div>
-
-            {error && <p className="mt-4 text-sm text-red-600">{error}</p>}
-
-            {selectedGameId ? (
-              <div className="mt-6 space-y-4">
-                <BoardView docRef={docRef} />
-              </div>
-            ) : (
-              <div className="mt-6 rounded border border-dashed border-slate-300 p-6 text-slate-600">
-                Join a game to open the collaborative board room.
-              </div>
-            )}
           </div>
         </section>
       </div>

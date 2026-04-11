@@ -5,20 +5,26 @@ interface Piece {
   type: string;
   subtype: string;
   landId: number;
-  health: number;
   damage: number;
+  strife: number;
   count: number;
   updatedBy?: string;
   timestamp?: number;
 }
 
-const PIECE_TYPES = ['explorer', 'town', 'city'];
+const INVADER_TYPES = ['explorer', 'town', 'city'];
+const DAHAN_TYPES = ['dahan'];
+const SPIRIT_TOKEN_TYPES = ['badlands', 'beast', 'deeps', 'disease', 'quake', 'vitality', 'wilds', 'strife'];
 
-const PIECE_CONFIG = {
-  explorer: { health: 1 },
-  town: { health: 2 },
-  city: { health: 3 },
-};
+const PIECE_TYPES = [...INVADER_TYPES, ...DAHAN_TYPES, ...SPIRIT_TOKEN_TYPES];
+
+function pieceHasDamage(type: string): boolean {
+  return INVADER_TYPES.includes(type) || DAHAN_TYPES.includes(type);
+}
+
+function pieceHasStrife(type: string): boolean {
+  return INVADER_TYPES.includes(type);
+}
 
 interface PieceEditorProps {
   pieceId: string;
@@ -30,8 +36,8 @@ const PieceEditor: React.FC<PieceEditorProps> = ({ pieceId, docRef, onClose }) =
   const [piece, setPiece] = useState<Piece | null>(null);
   const [type, setType] = useState('explorer');
   const [subtype, setSubtype] = useState('');
-  const [health, setHealth] = useState(1);
   const [damage, setDamage] = useState(0);
+  const [strife, setStrife] = useState(0);
   const [count, setCount] = useState(1);
 
   useEffect(() => {
@@ -45,9 +51,9 @@ const PieceEditor: React.FC<PieceEditorProps> = ({ pieceId, docRef, onClose }) =
       setPiece(currentPiece);
       setType(currentPiece.type || 'explorer');
       setSubtype(currentPiece.subtype || '');
-      setHealth(currentPiece.health || 1);
-      setDamage(currentPiece.damage || 0);
-      setCount(currentPiece.count || 1);
+      setDamage(currentPiece.damage ?? currentPiece.health ?? 0);
+      setStrife(currentPiece.strife ?? 0);
+      setCount(currentPiece.count ?? 1);
     }
   }, [pieceId, docRef]);
 
@@ -60,8 +66,8 @@ const PieceEditor: React.FC<PieceEditorProps> = ({ pieceId, docRef, onClose }) =
       type,
       subtype,
       landId: piece?.landId || 1,
-      health,
-      damage,
+      damage: pieceHasDamage(type) ? damage : 0,
+      strife: pieceHasStrife(type) ? strife : 0,
       count,
       updatedBy: 'user',
       timestamp: Date.now(),
@@ -96,7 +102,7 @@ const PieceEditor: React.FC<PieceEditorProps> = ({ pieceId, docRef, onClose }) =
                 setType(newType);
                 const config = PIECE_CONFIG[newType as keyof typeof PIECE_CONFIG];
                 if (config) {
-                  setHealth(config.health);
+                  setDamage(config.damage);
                 }
               }}
               className="w-full border rounded px-3 py-2"
@@ -109,38 +115,31 @@ const PieceEditor: React.FC<PieceEditorProps> = ({ pieceId, docRef, onClose }) =
             </select>
           </div>
 
-          <div>
-            <label className="block text-sm font-medium mb-1">Subtype</label>
-            <input
-              type="text"
-              value={subtype}
-              onChange={(e) => setSubtype(e.target.value)}
-              className="w-full border rounded px-3 py-2"
-              placeholder="e.g., Ranged, Melee"
-            />
-          </div>
+          {pieceHasDamage(type) && (
+            <div>
+              <label className="block text-sm font-medium mb-1">Damage</label>
+              <input
+                type="number"
+                value={damage}
+                onChange={(e) => setDamage(Math.max(0, parseInt(e.target.value) || 0))}
+                className="w-full border rounded px-3 py-2"
+                min="0"
+              />
+            </div>
+          )}
 
-          <div>
-            <label className="block text-sm font-medium mb-1">Health</label>
-            <input
-              type="number"
-              value={health}
-              onChange={(e) => setHealth(Math.max(0, parseInt(e.target.value) || 0))}
-              className="w-full border rounded px-3 py-2"
-              min="0"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium mb-1">Damage</label>
-            <input
-              type="number"
-              value={damage}
-              onChange={(e) => setDamage(Math.max(0, parseInt(e.target.value) || 0))}
-              className="w-full border rounded px-3 py-2"
-              min="0"
-            />
-          </div>
+          {pieceHasStrife(type) && (
+            <div>
+              <label className="block text-sm font-medium mb-1">Strife</label>
+              <input
+                type="number"
+                value={strife}
+                onChange={(e) => setStrife(Math.max(0, parseInt(e.target.value) || 0))}
+                className="w-full border rounded px-3 py-2"
+                min="0"
+              />
+            </div>
+          )}
 
           <div>
             <label className="block text-sm font-medium mb-1">Count</label>
