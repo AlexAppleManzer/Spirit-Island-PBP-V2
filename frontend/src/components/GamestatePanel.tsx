@@ -1,11 +1,29 @@
 import { useEffect, useMemo, useState } from 'react';
 import * as Y from 'yjs';
 import { DEFAULT_INVADER_DECK, type InvaderCardDefinition } from '../data/invaderCards';
+import {
+  EVENT_CARDS,
+  createShuffledEventCardDeck,
+  type EventCardDefinition,
+} from '../data/eventCards';
+import {
+  FEAR_CARDS,
+  createShuffledFearCardDeck,
+  type FearCardDefinition,
+} from '../data/fearCards';
+import {
+  BLIGHT_CARDS,
+  createShuffledBlightCardDeck,
+  type BlightCardDefinition,
+} from '../data/blightCards';
 
 const TURN_PHASES = ['growth', 'fast', 'event', 'invader', 'slow'] as const;
 type TurnPhase = (typeof TURN_PHASES)[number];
 
 type InvaderCard = InvaderCardDefinition;
+type EventCard = EventCardDefinition;
+type FearCard = FearCardDefinition;
+type BlightCard = BlightCardDefinition;
 
 type InvaderTrackCards = {
   ravage: InvaderCard | null;
@@ -35,6 +53,18 @@ type GamestateSnapshot = {
   invaderRemovedCards: InvaderCard[];
   invaderDiscardCards: InvaderCard[];
   invaderTrackCards: InvaderTrackCards;
+  eventDeckCards: EventCard[];
+  eventRemovedCards: EventCard[];
+  eventDiscardCards: EventCard[];
+  currentEventCard: EventCard | null;
+  fearDeckCards: FearCard[];
+  fearEarnedCards: FearCard[];
+  fearDiscardCards: FearCard[];
+  currentFearCard: FearCard | null;
+  blightDeckCards: BlightCard[];
+  blightDiscardCards: BlightCard[];
+  currentBlightCard: BlightCard | null;
+  blightLoss: boolean;
   decks: { invader: number; fear: number; event: number };
   discards: { invader: number; fear: number; event: number; blight: number };
   blightCard: string;
@@ -53,6 +83,24 @@ const getSafeNumber = (value: unknown, fallback: number) => {
   return fallback;
 };
 
+const isDeckCard = (value: unknown): value is EventCard | FearCard => {
+  if (!value || typeof value !== 'object') return false;
+  const card = value as Partial<EventCard>;
+  return (
+    typeof card.id === 'string' &&
+    typeof card.name === 'string' &&
+    typeof card.faceUrl === 'string' &&
+    typeof card.backUrl === 'string'
+  );
+};
+
+const parseDeckCardList = <T extends EventCard | FearCard>(value: unknown, fallback: T[] = []): T[] => {
+  if (!Array.isArray(value)) {
+    return fallback;
+  }
+  return value.filter(isDeckCard) as T[];
+};
+
 const isInvaderCard = (value: unknown): value is InvaderCard => {
   if (!value || typeof value !== 'object') return false;
   const card = value as Partial<InvaderCard>;
@@ -65,7 +113,7 @@ const isInvaderCard = (value: unknown): value is InvaderCard => {
   );
 };
 
-const parseCardList = (value: unknown, fallback: InvaderCard[] = []): InvaderCard[] => {
+const parseInvaderCardList = (value: unknown, fallback: InvaderCard[] = []): InvaderCard[] => {
   if (!Array.isArray(value)) {
     return fallback;
   }
@@ -84,6 +132,35 @@ const parseTrackCards = (value: unknown): InvaderTrackCards => {
   };
 };
 
+const parseSingleDeckCard = <T extends EventCard | FearCard>(value: unknown): T | null => {
+  return isDeckCard(value) ? (value as T) : null;
+};
+
+const isBlightCard = (value: unknown): value is BlightCard => {
+  if (!value || typeof value !== 'object') return false;
+  const card = value as Partial<BlightCard>;
+  return (
+    typeof card.id === 'string' &&
+    typeof card.name === 'string' &&
+    typeof card.faceUrl === 'string' &&
+    typeof card.backUrl === 'string' &&
+    typeof card.blightPerPlayer === 'number' &&
+    Number.isFinite(card.blightPerPlayer) &&
+    typeof card.healthy === 'boolean'
+  );
+};
+
+const parseBlightCardList = (value: unknown, fallback: BlightCard[] = []): BlightCard[] => {
+  if (!Array.isArray(value)) {
+    return fallback;
+  }
+  return value.filter(isBlightCard);
+};
+
+const parseSingleBlightCard = (value: unknown): BlightCard | null => {
+  return isBlightCard(value) ? value : null;
+};
+
 const clampMin = (value: number, min: number) => {
   return value < min ? min : value;
 };
@@ -98,7 +175,7 @@ const getTerrorLevelFromFearCards = (fearCardsEarned: number, fearThresholds: nu
     return 4;
   }
 
-  for (let i = fearThresholds.length - 1; i >= 0; i--) {
+  for (let i = fearThresholds.length - 1; i >= 0; i -= 1) {
     const threshold = fearThresholds[i];
     if (threshold !== undefined && fearCardsEarned >= threshold) {
       return i + 2;
@@ -119,19 +196,14 @@ const ensureNestedMap = (parent: Y.Map<unknown>, key: string) => {
   return created;
 };
 
-const ensureYArray = (parent: Y.Map<unknown> | Y.Array<unknown>, key: string | number) => {
-  if (parent instanceof Y.Array) {
-    // For Y.Array, key is an index; can't ensure by index, just return parent
-    return parent;
-  }
-
-  const existing = parent.get(key as string);
+const ensureYArray = (parent: Y.Map<unknown>, key: string) => {
+  const existing = parent.get(key);
   if (existing instanceof Y.Array) {
     return existing as Y.Array<unknown>;
   }
 
   const created = new Y.Array<unknown>();
-  parent.set(key as string, created);
+  parent.set(key, created);
   return created;
 };
 
@@ -164,7 +236,6 @@ const ensureGamestateDefaults = (doc: Y.Doc) => {
   gameMap.set('fearPool', fearPool);
   gameMap.set('fearCardsEarned', fearCardsEarned);
 
-  // Get fear thresholds from gameConfig or use defaults
   let fearThresholds = DEFAULT_FEAR_THRESHOLDS;
   const gameConfig = gameMap.get('gameConfig');
   if (gameConfig instanceof Y.Map) {
@@ -182,12 +253,25 @@ const ensureGamestateDefaults = (doc: Y.Doc) => {
   const blightCount = clampMin(getSafeNumber(gameMap.get('blightCount'), playerCount * 2 + 1), 0);
   gameMap.set('blightCount', blightCount);
 
+  const rawBlightDeckCards = gameMap.get('blightDeckCards');
+  const parsedBlightDeckCards = parseBlightCardList(rawBlightDeckCards);
+  if (!Array.isArray(rawBlightDeckCards)) {
+    gameMap.set('blightDeckCards', createShuffledBlightCardDeck());
+  } else if (parsedBlightDeckCards.length === 0 && BLIGHT_CARDS.length > 0) {
+    gameMap.set('blightDeckCards', createShuffledBlightCardDeck());
+  }
+  if (!Array.isArray(gameMap.get('blightDiscardCards'))) {
+    gameMap.set('blightDiscardCards', []);
+  }
+  if (!gameMap.has('currentBlightCard')) {
+    gameMap.set('currentBlightCard', null);
+  }
+
   const invaderTrack = ensureNestedMap(gameMap, 'invaderTrack');
   invaderTrack.set('ravage', clampMin(getSafeNumber(invaderTrack.get('ravage'), 0), 0));
   invaderTrack.set('build', clampMin(getSafeNumber(invaderTrack.get('build'), 0), 0));
   invaderTrack.set('explore', clampMin(getSafeNumber(invaderTrack.get('explore'), 1), 0));
 
-  // Ensure invader lands arrays exist
   if (!(invaderTrack.get('exploredLands') instanceof Y.Array)) {
     invaderTrack.set('exploredLands', new Y.Array());
   }
@@ -198,56 +282,124 @@ const ensureGamestateDefaults = (doc: Y.Doc) => {
     invaderTrack.set('ravageLands', new Y.Array());
   }
 
-  const decks = ensureNestedMap(gameMap, 'decks');
-  decks.set('invader', clampMin(getSafeNumber(decks.get('invader'), 12), 0));
-  decks.set('fear', clampMin(getSafeNumber(decks.get('fear'), 9), 0));
-  decks.set('event', clampMin(getSafeNumber(decks.get('event'), 0), 0));
-
-  const discards = ensureNestedMap(gameMap, 'discards');
-  discards.set('invader', clampMin(getSafeNumber(discards.get('invader'), 0), 0));
-  discards.set('fear', clampMin(getSafeNumber(discards.get('fear'), 0), 0));
-  discards.set('event', clampMin(getSafeNumber(discards.get('event'), 0), 0));
-  discards.set('blight', clampMin(getSafeNumber(discards.get('blight'), 0), 0));
-
   const rawInvaderDeckCards = gameMap.get('invaderDeckCards');
-  const invaderDeckCards = parseCardList(rawInvaderDeckCards);
   if (!Array.isArray(rawInvaderDeckCards)) {
     gameMap.set('invaderDeckCards', [...DEFAULT_INVADER_DECK]);
-    decks.set('invader', DEFAULT_INVADER_DECK.length);
-  } else {
-    decks.set('invader', invaderDeckCards.length);
   }
 
-  const invaderRemovedCards = parseCardList(gameMap.get('invaderRemovedCards'));
   if (!gameMap.has('invaderRemovedCards')) {
-    gameMap.set('invaderRemovedCards', invaderRemovedCards);
+    gameMap.set('invaderRemovedCards', parseInvaderCardList(gameMap.get('invaderRemovedCards')));
   }
 
-  const invaderDiscardCards = parseCardList(gameMap.get('invaderDiscardCards'));
   if (!gameMap.has('invaderDiscardCards')) {
-    gameMap.set('invaderDiscardCards', invaderDiscardCards);
+    gameMap.set('invaderDiscardCards', parseInvaderCardList(gameMap.get('invaderDiscardCards')));
   }
 
-  const invaderTrackCards = parseTrackCards(gameMap.get('invaderTrackCards'));
-  gameMap.set('invaderTrackCards', invaderTrackCards);
+  gameMap.set('invaderTrackCards', parseTrackCards(gameMap.get('invaderTrackCards')));
+
+  const rawEventDeckCards = gameMap.get('eventDeckCards');
+  const parsedEventDeckCards = parseDeckCardList<EventCard>(rawEventDeckCards);
+  if (!Array.isArray(rawEventDeckCards)) {
+    gameMap.set('eventDeckCards', createShuffledEventCardDeck());
+  } else if (parsedEventDeckCards.length === 0 && EVENT_CARDS.length > 0) {
+    gameMap.set('eventDeckCards', createShuffledEventCardDeck());
+  }
+
+  if (!Array.isArray(gameMap.get('eventRemovedCards'))) {
+    gameMap.set('eventRemovedCards', []);
+  }
+  if (!Array.isArray(gameMap.get('eventDiscardCards'))) {
+    gameMap.set('eventDiscardCards', []);
+  }
+  if (!gameMap.has('currentEventCard')) {
+    gameMap.set('currentEventCard', null);
+  }
+
+  const rawFearDeckCards = gameMap.get('fearDeckCards');
+  const parsedFearDeckCards = parseDeckCardList<FearCard>(rawFearDeckCards);
+  if (!Array.isArray(rawFearDeckCards)) {
+    gameMap.set('fearDeckCards', createShuffledFearCardDeck());
+  } else if (parsedFearDeckCards.length === 0 && FEAR_CARDS.length > 0) {
+    gameMap.set('fearDeckCards', createShuffledFearCardDeck());
+  }
+
+  if (!Array.isArray(gameMap.get('fearEarnedCards'))) {
+    gameMap.set('fearEarnedCards', []);
+  }
+  if (!Array.isArray(gameMap.get('fearDiscardCards'))) {
+    gameMap.set('fearDiscardCards', []);
+  }
+  if (!gameMap.has('currentFearCard')) {
+    gameMap.set('currentFearCard', null);
+  }
+
+  let normalizedFearDeck = parseDeckCardList<FearCard>(gameMap.get('fearDeckCards'));
+  let normalizedFearEarned = parseDeckCardList<FearCard>(gameMap.get('fearEarnedCards'));
+  const normalizedFearDiscard = parseDeckCardList<FearCard>(gameMap.get('fearDiscardCards'));
+  const normalizedCurrentFear = parseSingleDeckCard<FearCard>(gameMap.get('currentFearCard'));
+  const representedFearCards =
+    normalizedFearEarned.length + normalizedFearDiscard.length + (normalizedCurrentFear ? 1 : 0);
+
+  if (representedFearCards < fearCardsEarned) {
+    const missing = fearCardsEarned - representedFearCards;
+    for (let i = 0; i < missing; i += 1) {
+      const [earnedCard, ...remainingDeck] = normalizedFearDeck;
+      if (!earnedCard) break;
+      normalizedFearDeck = remainingDeck;
+      normalizedFearEarned = [...normalizedFearEarned, earnedCard];
+    }
+    gameMap.set('fearDeckCards', normalizedFearDeck);
+    gameMap.set('fearEarnedCards', normalizedFearEarned);
+  }
+
+  const decks = ensureNestedMap(gameMap, 'decks');
+  decks.set('invader', parseInvaderCardList(gameMap.get('invaderDeckCards')).length);
+  decks.set('fear', parseDeckCardList<FearCard>(gameMap.get('fearDeckCards')).length);
+  decks.set('event', parseDeckCardList<EventCard>(gameMap.get('eventDeckCards')).length);
+
+  const discards = ensureNestedMap(gameMap, 'discards');
+  discards.set('invader', parseInvaderCardList(gameMap.get('invaderDiscardCards')).length);
+  discards.set('fear', parseDeckCardList<FearCard>(gameMap.get('fearDiscardCards')).length);
+  discards.set('event', parseDeckCardList<EventCard>(gameMap.get('eventDiscardCards')).length);
+  discards.set('blight', parseBlightCardList(gameMap.get('blightDiscardCards')).length);
+
+  const currentBlightCard = parseSingleBlightCard(gameMap.get('currentBlightCard'));
+  const persistedBlightLoss = gameMap.get('blightLoss');
+  const shouldBeBlightLoss = !!(currentBlightCard && !currentBlightCard.healthy && blightCount === 0);
+  if (typeof persistedBlightLoss !== 'boolean') {
+    gameMap.set('blightLoss', shouldBeBlightLoss);
+  } else if (!persistedBlightLoss && shouldBeBlightLoss) {
+    gameMap.set('blightLoss', true);
+  }
 };
 
 const readSnapshot = (doc: Y.Doc): GamestateSnapshot => {
   const gameMap = doc.getMap('game') as Y.Map<unknown>;
   const invaderTrack = gameMap.get('invaderTrack') as Y.Map<unknown> | undefined;
-  const decks = gameMap.get('decks') as Y.Map<unknown> | undefined;
-  const discards = gameMap.get('discards') as Y.Map<unknown> | undefined;
   const gameConfig = gameMap.get('gameConfig') as Y.Map<unknown> | undefined;
-  const invaderDeckCards = parseCardList(gameMap.get('invaderDeckCards'));
-  const invaderRemovedCards = parseCardList(gameMap.get('invaderRemovedCards'));
-  const invaderDiscardCards = parseCardList(gameMap.get('invaderDiscardCards'));
+
+  const invaderDeckCards = parseInvaderCardList(gameMap.get('invaderDeckCards'));
+  const invaderRemovedCards = parseInvaderCardList(gameMap.get('invaderRemovedCards'));
+  const invaderDiscardCards = parseInvaderCardList(gameMap.get('invaderDiscardCards'));
   const invaderTrackCards = parseTrackCards(gameMap.get('invaderTrackCards'));
+
+  const eventDeckCards = parseDeckCardList<EventCard>(gameMap.get('eventDeckCards'));
+  const eventRemovedCards = parseDeckCardList<EventCard>(gameMap.get('eventRemovedCards'));
+  const eventDiscardCards = parseDeckCardList<EventCard>(gameMap.get('eventDiscardCards'));
+  const currentEventCard = parseSingleDeckCard<EventCard>(gameMap.get('currentEventCard'));
+
+  const fearDeckCards = parseDeckCardList<FearCard>(gameMap.get('fearDeckCards'));
+  const fearEarnedCards = parseDeckCardList<FearCard>(gameMap.get('fearEarnedCards'));
+  const fearDiscardCards = parseDeckCardList<FearCard>(gameMap.get('fearDiscardCards'));
+  const currentFearCard = parseSingleDeckCard<FearCard>(gameMap.get('currentFearCard'));
+  const blightDeckCards = parseBlightCardList(gameMap.get('blightDeckCards'));
+  const blightDiscardCards = parseBlightCardList(gameMap.get('blightDiscardCards'));
+  const currentBlightCard = parseSingleBlightCard(gameMap.get('currentBlightCard'));
 
   const playerCount = clampMin(getSafeNumber(gameMap.get('playerCount'), 1), 1);
   const fearThreshold = FEAR_PER_PLAYER * playerCount;
   const fearCardsEarned = clampMin(getSafeNumber(gameMap.get('fearCardsEarned'), 0), 0);
 
-  // Get fear thresholds from gameConfig or use defaults
   let fearThresholds = DEFAULT_FEAR_THRESHOLDS;
   if (gameConfig) {
     const configThresholds = gameConfig.get('fearThresholds');
@@ -262,15 +414,14 @@ const readSnapshot = (doc: Y.Doc): GamestateSnapshot => {
       ? (currentPhaseRaw as TurnPhase)
       : 'growth';
 
-  // Get invader lands
   const exploredLands = (invaderTrack?.get('exploredLands') instanceof Y.Array
-    ? (invaderTrack?.get('exploredLands') as Y.Array<number>).toArray()
+    ? (invaderTrack.get('exploredLands') as Y.Array<number>).toArray()
     : []) as number[];
   const buildLands = (invaderTrack?.get('buildLands') instanceof Y.Array
-    ? (invaderTrack?.get('buildLands') as Y.Array<number>).toArray()
+    ? (invaderTrack.get('buildLands') as Y.Array<number>).toArray()
     : []) as number[];
   const ravageLands = (invaderTrack?.get('ravageLands') instanceof Y.Array
-    ? (invaderTrack?.get('ravageLands') as Y.Array<number>).toArray()
+    ? (invaderTrack.get('ravageLands') as Y.Array<number>).toArray()
     : []) as number[];
 
   return {
@@ -296,23 +447,36 @@ const readSnapshot = (doc: Y.Doc): GamestateSnapshot => {
     invaderRemovedCards,
     invaderDiscardCards,
     invaderTrackCards,
+    eventDeckCards,
+    eventRemovedCards,
+    eventDiscardCards,
+    currentEventCard,
+    fearDeckCards,
+    fearEarnedCards,
+    fearDiscardCards,
+    currentFearCard,
+    blightDeckCards,
+    blightDiscardCards,
+    currentBlightCard,
+    blightLoss:
+      (gameMap.get('blightLoss') as boolean) ||
+      !!(currentBlightCard && !currentBlightCard.healthy && clampMin(getSafeNumber(gameMap.get('blightCount'), playerCount * 2 + 1), 0) === 0),
     decks: {
       invader: invaderDeckCards.length,
-      fear: clampMin(getSafeNumber(decks?.get('fear'), 9), 0),
-      event: clampMin(getSafeNumber(decks?.get('event'), 0), 0),
+      fear: fearDeckCards.length,
+      event: eventDeckCards.length,
     },
     discards: {
       invader: invaderDiscardCards.length,
-      fear: clampMin(getSafeNumber(discards?.get('fear'), 0), 0),
-      event: clampMin(getSafeNumber(discards?.get('event'), 0), 0),
-      blight: clampMin(getSafeNumber(discards?.get('blight'), 0), 0),
+      fear: fearDiscardCards.length,
+      event: eventDiscardCards.length,
+      blight: blightDiscardCards.length,
     },
-    blightCard: (gameMap.get('blightCard') as string) || 'Unknown Blight Card',
+    blightCard: (currentBlightCard?.name || (gameMap.get('blightCard') as string)) || 'Unknown Blight Card',
     blightCount: clampMin(getSafeNumber(gameMap.get('blightCount'), playerCount * 2 + 1), 0),
     adversary: (gameConfig?.get('adversary') as string) || 'Unknown Adversary',
   };
 };
-
 
 const initialSnapshot: GamestateSnapshot = {
   turn: 1,
@@ -329,12 +493,25 @@ const initialSnapshot: GamestateSnapshot = {
   invaderRemovedCards: [],
   invaderDiscardCards: [],
   invaderTrackCards: { ravage: null, build: null, explore: null },
-  decks: { invader: 12, fear: 9, event: 0 },
+  eventDeckCards: [...EVENT_CARDS],
+  eventRemovedCards: [],
+  eventDiscardCards: [],
+  currentEventCard: null,
+  fearDeckCards: [...FEAR_CARDS],
+  fearEarnedCards: [],
+  fearDiscardCards: [],
+  currentFearCard: null,
+  blightDeckCards: [...BLIGHT_CARDS],
+  blightDiscardCards: [],
+  currentBlightCard: null,
+  blightLoss: false,
+  decks: { invader: 12, fear: FEAR_CARDS.length, event: EVENT_CARDS.length },
   discards: { invader: 0, fear: 0, event: 0, blight: 0 },
   blightCard: 'Unknown Blight Card',
   blightCount: 3,
   adversary: 'Unknown Adversary',
 };
+
 const StatPill = ({ label, value }: { label: string; value: number | string }) => (
   <div className="rounded border border-slate-200 bg-slate-50 px-3 py-2">
     <p className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</p>
@@ -378,6 +555,7 @@ const CounterRow = ({
 const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef }) => {
   const [snapshot, setSnapshot] = useState<GamestateSnapshot>(initialSnapshot);
   const [showInvaderDiscard, setShowInvaderDiscard] = useState(false);
+  const [showEventDiscard, setShowEventDiscard] = useState(false);
 
   useEffect(() => {
     const doc = docRef.current;
@@ -414,6 +592,20 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef }) => {
     });
   };
 
+  const syncDeckAndDiscardCounts = (gameMap: Y.Map<unknown>) => {
+    const decks = ensureNestedMap(gameMap, 'decks');
+    const discards = ensureNestedMap(gameMap, 'discards');
+
+    decks.set('invader', parseInvaderCardList(gameMap.get('invaderDeckCards')).length);
+    decks.set('fear', parseDeckCardList<FearCard>(gameMap.get('fearDeckCards')).length);
+    decks.set('event', parseDeckCardList<EventCard>(gameMap.get('eventDeckCards')).length);
+
+    discards.set('invader', parseInvaderCardList(gameMap.get('invaderDiscardCards')).length);
+    discards.set('fear', parseDeckCardList<FearCard>(gameMap.get('fearDiscardCards')).length);
+    discards.set('event', parseDeckCardList<EventCard>(gameMap.get('eventDiscardCards')).length);
+    discards.set('blight', parseBlightCardList(gameMap.get('blightDiscardCards')).length);
+  };
+
   const adjustPhase = (step: 1 | -1) => {
     withGameMap((_doc, gameMap) => {
       const currentPhaseRaw = gameMap.get('currentPhase');
@@ -423,15 +615,26 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef }) => {
           : 'growth';
       const currentIndex = TURN_PHASES.indexOf(currentPhase);
 
+      if (step === 1 && currentPhase === 'event') {
+        const currentEventCard = parseSingleDeckCard<EventCard>(gameMap.get('currentEventCard'));
+        if (currentEventCard) {
+          const eventDiscard = parseDeckCardList<EventCard>(gameMap.get('eventDiscardCards'));
+          gameMap.set('eventDiscardCards', [...eventDiscard, currentEventCard]);
+          gameMap.set('currentEventCard', null);
+        }
+      }
+
       if (step === 1) {
         if (currentIndex === TURN_PHASES.length - 1) {
           gameMap.set('currentPhase', TURN_PHASES[0]);
           const turn = clampMin(getSafeNumber(gameMap.get('turn'), 1), 1);
           gameMap.set('turn', turn + 1);
+          syncDeckAndDiscardCounts(gameMap);
           return;
         }
 
         gameMap.set('currentPhase', TURN_PHASES[currentIndex + 1]);
+        syncDeckAndDiscardCounts(gameMap);
         return;
       }
 
@@ -439,10 +642,12 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef }) => {
         const turn = clampMin(getSafeNumber(gameMap.get('turn'), 1), 1);
         gameMap.set('currentPhase', TURN_PHASES[TURN_PHASES.length - 1]);
         gameMap.set('turn', clampMin(turn - 1, 1));
+        syncDeckAndDiscardCounts(gameMap);
         return;
       }
 
       gameMap.set('currentPhase', TURN_PHASES[currentIndex - 1]);
+      syncDeckAndDiscardCounts(gameMap);
     });
   };
 
@@ -454,7 +659,6 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef }) => {
       let fearPool = clampMin(getSafeNumber(gameMap.get('fearPool'), 0) + delta, 0);
       let fearCardsEarned = clampMin(getSafeNumber(gameMap.get('fearCardsEarned'), 0), 0);
 
-      // Get fear thresholds
       const gameConfig = gameMap.get('gameConfig') as Y.Map<unknown> | undefined;
       let fearThresholds = DEFAULT_FEAR_THRESHOLDS;
       if (gameConfig) {
@@ -464,17 +668,28 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef }) => {
         }
       }
 
+      let fearDeck = parseDeckCardList<FearCard>(gameMap.get('fearDeckCards'));
+      let fearEarned = parseDeckCardList<FearCard>(gameMap.get('fearEarnedCards'));
+
       while (fearPool >= threshold) {
         fearPool -= threshold;
         fearCardsEarned += 1;
+        const [earnedCard, ...remainingFearDeck] = fearDeck;
+        if (earnedCard) {
+          fearEarned = [...fearEarned, earnedCard];
+          fearDeck = remainingFearDeck;
+        }
       }
 
       gameMap.set('fearPool', fearPool);
       gameMap.set('fearThreshold', threshold);
       gameMap.set('fearCardsEarned', fearCardsEarned);
-      
+      gameMap.set('fearDeckCards', fearDeck);
+      gameMap.set('fearEarnedCards', fearEarned);
+
       const terrorLevel = getTerrorLevelFromFearCards(fearCardsEarned, fearThresholds);
       gameMap.set('terrorLevel', terrorLevel);
+      syncDeckAndDiscardCounts(gameMap);
     });
   };
 
@@ -482,7 +697,7 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef }) => {
     withGameMap((_doc, gameMap) => {
       const gameConfig = gameMap.get('gameConfig') as Y.Map<unknown> | undefined;
       let fearThresholds = DEFAULT_FEAR_THRESHOLDS;
-      
+
       if (gameConfig) {
         const configThresholds = gameConfig.get('fearThresholds');
         if (Array.isArray(configThresholds)) {
@@ -490,34 +705,116 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef }) => {
         }
       }
 
-      const fearCardsEarned = clampMin(getSafeNumber(gameMap.get('fearCardsEarned'), 0) + delta, 0);
+      let fearCardsEarned = clampMin(getSafeNumber(gameMap.get('fearCardsEarned'), 0), 0);
+      let fearDeck = parseDeckCardList<FearCard>(gameMap.get('fearDeckCards'));
+      let fearEarned = parseDeckCardList<FearCard>(gameMap.get('fearEarnedCards'));
+
+      if (delta > 0) {
+        for (let i = 0; i < delta; i += 1) {
+          fearCardsEarned += 1;
+          const [earnedCard, ...remainingFearDeck] = fearDeck;
+          if (earnedCard) {
+            fearEarned = [...fearEarned, earnedCard];
+            fearDeck = remainingFearDeck;
+          }
+        }
+      } else if (delta < 0) {
+        for (let i = 0; i < Math.abs(delta); i += 1) {
+          if (fearCardsEarned === 0) break;
+          fearCardsEarned -= 1;
+          const lastEarned = fearEarned[fearEarned.length - 1];
+          if (lastEarned) {
+            fearEarned = fearEarned.slice(0, -1);
+            fearDeck = [lastEarned, ...fearDeck];
+          }
+        }
+      }
+
       gameMap.set('fearCardsEarned', fearCardsEarned);
-      
-      // Recalculate terror level based on fearThresholds
+      gameMap.set('fearDeckCards', fearDeck);
+      gameMap.set('fearEarnedCards', fearEarned);
+
       const terrorLevel = getTerrorLevelFromFearCards(fearCardsEarned, fearThresholds);
       gameMap.set('terrorLevel', terrorLevel);
+      syncDeckAndDiscardCounts(gameMap);
+    });
+  };
+
+  const revealEventCard = () => {
+    withGameMap((_doc, gameMap) => {
+      const currentPhase = gameMap.get('currentPhase');
+      if (currentPhase !== 'event') {
+        return;
+      }
+
+      const currentEventCard = parseSingleDeckCard<EventCard>(gameMap.get('currentEventCard'));
+      if (currentEventCard) {
+        return;
+      }
+
+      const eventDeck = parseDeckCardList<EventCard>(gameMap.get('eventDeckCards'));
+      const [nextEventCard, ...remainingDeck] = eventDeck;
+      if (!nextEventCard) {
+        return;
+      }
+
+      gameMap.set('eventDeckCards', remainingDeck);
+      gameMap.set('currentEventCard', nextEventCard);
+      syncDeckAndDiscardCounts(gameMap);
+    });
+  };
+
+  const revealFearCard = () => {
+    withGameMap((_doc, gameMap) => {
+      const currentPhase = gameMap.get('currentPhase');
+      if (currentPhase !== 'event') {
+        return;
+      }
+
+      const currentFearCard = parseSingleDeckCard<FearCard>(gameMap.get('currentFearCard'));
+      if (currentFearCard) {
+        return;
+      }
+
+      const fearEarned = parseDeckCardList<FearCard>(gameMap.get('fearEarnedCards'));
+      const [nextFearCard, ...remainingEarned] = fearEarned;
+      if (!nextFearCard) {
+        return;
+      }
+
+      gameMap.set('fearEarnedCards', remainingEarned);
+      gameMap.set('currentFearCard', nextFearCard);
+      syncDeckAndDiscardCounts(gameMap);
+    });
+  };
+
+  const discardCurrentFearCard = () => {
+    withGameMap((_doc, gameMap) => {
+      const currentFearCard = parseSingleDeckCard<FearCard>(gameMap.get('currentFearCard'));
+      if (!currentFearCard) {
+        return;
+      }
+
+      const fearDiscard = parseDeckCardList<FearCard>(gameMap.get('fearDiscardCards'));
+      gameMap.set('fearDiscardCards', [...fearDiscard, currentFearCard]);
+      gameMap.set('currentFearCard', null);
+      syncDeckAndDiscardCounts(gameMap);
     });
   };
 
   const shiftInvaderTrackLeft = () => {
     withGameMap((_doc, gameMap) => {
       const invaderTrack = ensureNestedMap(gameMap, 'invaderTrack');
-      const discards = ensureNestedMap(gameMap, 'discards');
       const trackCards = parseTrackCards(gameMap.get('invaderTrackCards'));
-      const invaderDiscardCards = parseCardList(gameMap.get('invaderDiscardCards'));
+      const invaderDiscardCards = parseInvaderCardList(gameMap.get('invaderDiscardCards'));
 
-      // Get lands arrays
       const exploredLands = (invaderTrack.get('exploredLands') instanceof Y.Array
         ? (invaderTrack.get('exploredLands') as Y.Array<number>).toArray()
         : []) as number[];
       const buildLands = (invaderTrack.get('buildLands') instanceof Y.Array
         ? (invaderTrack.get('buildLands') as Y.Array<number>).toArray()
         : []) as number[];
-      const ravageLands = (invaderTrack.get('ravageLands') instanceof Y.Array
-        ? (invaderTrack.get('ravageLands') as Y.Array<number>).toArray()
-        : []) as number[];
 
-      // Shift: Build → Ravage, Explored → Build, clear Explored
       const newBuildLands = ensureYArray(invaderTrack, 'buildLands');
       const newRavageLands = ensureYArray(invaderTrack, 'ravageLands');
       const newExploredLands = ensureYArray(invaderTrack, 'exploredLands');
@@ -533,58 +830,40 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef }) => {
         ? [...invaderDiscardCards, trackCards.ravage]
         : invaderDiscardCards;
       gameMap.set('invaderDiscardCards', nextInvaderDiscardCards);
-      discards.set('invader', nextInvaderDiscardCards.length);
 
       gameMap.set('invaderTrackCards', {
         ravage: trackCards.build,
         build: trackCards.explore,
         explore: null,
       });
+
+      syncDeckAndDiscardCounts(gameMap);
     });
   };
 
   const drawToExplore = () => {
     withGameMap((_doc, gameMap) => {
-      const decks = ensureNestedMap(gameMap, 'decks');
       const invaderTrack = ensureNestedMap(gameMap, 'invaderTrack');
-      const deckCards = parseCardList(gameMap.get('invaderDeckCards'));
+      const deckCards = parseInvaderCardList(gameMap.get('invaderDeckCards'));
       const trackCards = parseTrackCards(gameMap.get('invaderTrackCards'));
 
-      const deckCount = clampMin(getSafeNumber(decks.get('invader'), 0), 0);
-      if (deckCount <= 0 || deckCards.length === 0) return;
+      if (deckCards.length === 0) return;
 
-      decks.set('invader', deckCount - 1);
-
-      // Draw random land (1-8)
       const randomLand = Math.floor(Math.random() * 8) + 1;
-
-      // Add to exploredLands array
       const exploredLands = ensureYArray(invaderTrack, 'exploredLands');
       exploredLands.push([randomLand]);
 
       const [drawnCard, ...remainingCards] = deckCards;
+      if (!drawnCard) return;
+
       gameMap.set('invaderDeckCards', remainingCards);
       gameMap.set('invaderTrackCards', {
         ravage: trackCards.ravage,
         build: trackCards.build,
         explore: drawnCard,
       });
-    });
-  };
 
-  const adjustDeckCount = (deckKey: 'fear' | 'event', delta: number) => {
-    withGameMap((_doc, gameMap) => {
-      const decks = ensureNestedMap(gameMap, 'decks');
-      const next = clampMin(getSafeNumber(decks.get(deckKey), 0) + delta, 0);
-      decks.set(deckKey, next);
-    });
-  };
-
-  const adjustDiscardCount = (discardKey: 'fear' | 'event' | 'blight', delta: number) => {
-    withGameMap((_doc, gameMap) => {
-      const discards = ensureNestedMap(gameMap, 'discards');
-      const next = clampMin(getSafeNumber(discards.get(discardKey), 0) + delta, 0);
-      discards.set(discardKey, next);
+      syncDeckAndDiscardCounts(gameMap);
     });
   };
 
@@ -592,8 +871,59 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef }) => {
     withGameMap((_doc, gameMap) => {
       const next = clampMin(getSafeNumber(gameMap.get('blightCount'), 0) + delta, 0);
       gameMap.set('blightCount', next);
+
+      const currentBlightCard = parseSingleBlightCard(gameMap.get('currentBlightCard'));
+      if (currentBlightCard && !currentBlightCard.healthy && next === 0) {
+        gameMap.set('blightLoss', true);
+      }
     });
   };
+
+  const flipBlightCard = () => {
+    withGameMap((_doc, gameMap) => {
+      const blightCount = clampMin(getSafeNumber(gameMap.get('blightCount'), 0), 0);
+      if (blightCount > 0) {
+        return;
+      }
+
+      if (gameMap.get('blightLoss') === true) {
+        return;
+      }
+
+      const currentBlightCard = parseSingleBlightCard(gameMap.get('currentBlightCard'));
+      if (currentBlightCard && !currentBlightCard.healthy) {
+        gameMap.set('blightLoss', true);
+        return;
+      }
+
+      let blightDeck = parseBlightCardList(gameMap.get('blightDeckCards'));
+      let blightDiscard = parseBlightCardList(gameMap.get('blightDiscardCards'));
+
+      if (currentBlightCard && currentBlightCard.healthy) {
+        blightDiscard = [...blightDiscard, currentBlightCard];
+        gameMap.set('blightDiscardCards', blightDiscard);
+      }
+
+      const [nextBlightCard, ...remainingBlightDeck] = blightDeck;
+      if (!nextBlightCard) {
+        gameMap.set('blightLoss', true);
+        return;
+      }
+
+      const playerCount = clampMin(getSafeNumber(gameMap.get('playerCount'), 1), 1);
+      const nextBlightCount = clampMin(nextBlightCard.blightPerPlayer * playerCount, 0);
+
+      gameMap.set('blightDeckCards', remainingBlightDeck);
+      gameMap.set('currentBlightCard', nextBlightCard);
+      gameMap.set('blightCard', nextBlightCard.name);
+      gameMap.set('blightCount', nextBlightCount);
+      gameMap.set('blightLoss', false);
+
+      syncDeckAndDiscardCounts(gameMap);
+    });
+  };
+
+  const eventActionsDisabled = snapshot.phase !== 'event';
 
   return (
     <aside className="space-y-4 rounded-xl bg-white p-4 shadow">
@@ -610,7 +940,7 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef }) => {
               <div
                 key={phase}
                 className={`rounded px-2 py-1 text-center text-xs font-semibold uppercase ${
-                  isActive ? 'bg-slate-800 text-white' : 'bg-white text-slate-600 border border-slate-200'
+                  isActive ? 'bg-slate-800 text-white' : 'border border-slate-200 bg-white text-slate-600'
                 }`}
               >
                 {phase}
@@ -635,8 +965,41 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef }) => {
           </button>
         </div>
         <p className="text-xs text-slate-500">
+          Leaving event phase discards the currently revealed event card automatically.
+        </p>
+        <p className="text-xs text-slate-500">
           Slow to Growth advances to the next turn. Current phase index: {phaseIndex + 1} / {TURN_PHASES.length}.
         </p>
+      </section>
+
+      <section className="space-y-3 rounded-lg border border-indigo-200 bg-indigo-50 p-3">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-indigo-700">Event Phase Actions</h2>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            disabled={eventActionsDisabled || snapshot.currentEventCard !== null || snapshot.eventDeckCards.length === 0}
+            onClick={revealEventCard}
+            className="flex-1 rounded border border-indigo-300 bg-white px-3 py-2 text-sm font-medium text-indigo-700 hover:bg-indigo-100 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Reveal Event Card
+          </button>
+        </div>
+        {snapshot.currentEventCard ? (
+          <div className="rounded border border-indigo-200 bg-white p-3">
+            <p className="text-xs font-semibold uppercase tracking-wide text-indigo-700">Current Event</p>
+            <div className="mt-2 flex justify-center">
+              <img
+                src={snapshot.currentEventCard.faceUrl}
+                alt={snapshot.currentEventCard.name || 'Event card'}
+                className="rounded border border-slate-300 object-cover"
+                style={{ width: 140, height: 200, minWidth: 140 }}
+              />
+            </div>
+            <p className="mt-2 text-center text-sm font-semibold text-slate-900">{snapshot.currentEventCard.name}</p>
+          </div>
+        ) : (
+          <p className="text-xs text-slate-500">No event card currently revealed.</p>
+        )}
       </section>
 
       <section className="space-y-3 rounded-lg border border-rose-200 bg-rose-50 p-3">
@@ -644,6 +1007,10 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef }) => {
         <div className="grid grid-cols-2 gap-3">
           <StatPill label="Fear Pool" value={snapshot.fearPool} />
           <StatPill label="Next Fear Card" value={`${snapshot.fearPool}/${snapshot.fearThreshold}`} />
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <StatPill label="Earned Fear Pile" value={snapshot.fearEarnedCards.length} />
+          <StatPill label="Current Fear Card" value={snapshot.currentFearCard ? 1 : 0} />
         </div>
         <CounterRow
           label="Add Fear"
@@ -657,6 +1024,38 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef }) => {
           onDecrement={() => adjustFearCardsEarned(-1)}
           onIncrement={() => adjustFearCardsEarned(1)}
         />
+        <div className="flex gap-2">
+          <button
+            type="button"
+            disabled={eventActionsDisabled || snapshot.currentFearCard !== null || snapshot.fearEarnedCards.length === 0}
+            onClick={revealFearCard}
+            className="flex-1 rounded border border-rose-300 bg-white px-3 py-2 text-sm font-medium text-rose-700 hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Reveal Fear Card
+          </button>
+          <button
+            type="button"
+            disabled={eventActionsDisabled || snapshot.currentFearCard === null}
+            onClick={discardCurrentFearCard}
+            className="flex-1 rounded border border-rose-300 bg-white px-3 py-2 text-sm font-medium text-rose-700 hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Discard Revealed Fear
+          </button>
+        </div>
+        {snapshot.currentFearCard ? (
+          <div className="rounded border border-rose-200 bg-white p-3">
+            <p className="text-xs font-semibold uppercase tracking-wide text-rose-700">Revealed Fear Card</p>
+            <div className="mt-2 flex justify-center">
+              <img
+                src={snapshot.currentFearCard.faceUrl}
+                alt={snapshot.currentFearCard.name || 'Fear card'}
+                className="rounded border border-slate-300 object-cover"
+                style={{ width: 140, height: 200, minWidth: 140 }}
+              />
+            </div>
+            <p className="mt-2 text-center text-sm font-semibold text-slate-900">{snapshot.currentFearCard.name}</p>
+          </div>
+        ) : null}
         <div className="rounded border border-rose-200 bg-white px-3 py-2">
           <p className="text-xs font-medium uppercase tracking-wide text-rose-700">Terror Level</p>
           <p className="text-sm font-semibold text-slate-900">
@@ -741,18 +1140,8 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef }) => {
       <section className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-700">Decks</h2>
         <StatPill label="Invader Deck" value={snapshot.decks.invader} />
-        <CounterRow
-          label="Fear Deck"
-          value={snapshot.decks.fear}
-          onDecrement={() => adjustDeckCount('fear', -1)}
-          onIncrement={() => adjustDeckCount('fear', 1)}
-        />
-        <CounterRow
-          label="Event Deck"
-          value={snapshot.decks.event}
-          onDecrement={() => adjustDeckCount('event', -1)}
-          onIncrement={() => adjustDeckCount('event', 1)}
-        />
+        <StatPill label="Fear Deck" value={snapshot.decks.fear} />
+        <StatPill label="Event Deck" value={snapshot.decks.event} />
       </section>
 
       <section className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
@@ -799,31 +1188,75 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef }) => {
             </div>
           )}
         </div>
-        <CounterRow
-          label="Fear Discard"
-          value={snapshot.discards.fear}
-          onDecrement={() => adjustDiscardCount('fear', -1)}
-          onIncrement={() => adjustDiscardCount('fear', 1)}
-        />
-        <CounterRow
-          label="Event Discard"
-          value={snapshot.discards.event}
-          onDecrement={() => adjustDiscardCount('event', -1)}
-          onIncrement={() => adjustDiscardCount('event', 1)}
-        />
-        <CounterRow
-          label="Blight Discard"
-          value={snapshot.discards.blight}
-          onDecrement={() => adjustDiscardCount('blight', -1)}
-          onIncrement={() => adjustDiscardCount('blight', 1)}
-        />
+
+        <div className="rounded border border-slate-200 bg-white px-3 py-2">
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <p className="text-sm font-medium text-slate-700">Event Discard</p>
+              <p className="text-xs text-slate-500">{snapshot.eventDiscardCards.length} card(s)</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowEventDiscard((current) => !current)}
+              className="rounded border border-slate-300 bg-slate-50 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100"
+            >
+              {showEventDiscard ? 'Hide' : 'Show'}
+            </button>
+          </div>
+          {showEventDiscard && (
+            <div className="mt-3">
+              {snapshot.eventDiscardCards.length === 0 ? (
+                <p className="text-xs text-slate-500">No event cards discarded yet.</p>
+              ) : (
+                <div className="grid grid-cols-2 gap-2">
+                  {snapshot.eventDiscardCards
+                    .slice()
+                    .reverse()
+                    .map((card, index) => (
+                      <div key={`${card.id}-${index}`} className="rounded border border-slate-200 px-2 py-2">
+                        <div className="flex justify-center">
+                          <img
+                            src={card.faceUrl}
+                            alt={card.name || 'Event card'}
+                            className="rounded border border-slate-300 object-cover"
+                            style={{ width: 140, height: 200, minWidth: 140 }}
+                          />
+                        </div>
+                        <p className="mt-1 truncate text-center text-[11px] font-semibold text-slate-900">{card.name}</p>
+                      </div>
+                    ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <StatPill label="Fear Discard" value={snapshot.discards.fear} />
+        <StatPill label="Blight Discard" value={snapshot.discards.blight} />
       </section>
 
       <section className="space-y-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-emerald-700">Blight Card</h2>
         <div className="rounded border border-emerald-200 bg-white px-3 py-2">
           <p className="text-xs font-medium uppercase tracking-wide text-emerald-700">Card</p>
-          <p className="text-sm font-semibold text-slate-900">{snapshot.blightCard}</p>
+          <p className="text-sm font-semibold text-slate-900">{snapshot.currentBlightCard?.name || snapshot.blightCard}</p>
+          {snapshot.currentBlightCard ? (
+            <>
+              <p className="text-xs text-slate-500">
+                Blight per player: {snapshot.currentBlightCard.blightPerPlayer} | {snapshot.currentBlightCard.healthy ? 'Still Healthy' : 'Not Healthy'}
+              </p>
+              <div className="mt-2 flex justify-center">
+                <img
+                  src={snapshot.currentBlightCard.faceUrl}
+                  alt={snapshot.currentBlightCard.name}
+                  className="rounded border border-slate-300 object-cover"
+                  style={{ width: 140, height: 200, minWidth: 140 }}
+                />
+              </div>
+            </>
+          ) : (
+            <p className="text-xs text-slate-500">Blight card not flipped yet.</p>
+          )}
         </div>
         <CounterRow
           label="Blight Counter"
@@ -831,6 +1264,20 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef }) => {
           onDecrement={() => adjustBlightCount(-1)}
           onIncrement={() => adjustBlightCount(1)}
         />
+        {snapshot.blightCount === 0 && !snapshot.blightLoss ? (
+          <button
+            type="button"
+            onClick={flipBlightCard}
+            className="w-full rounded border border-emerald-300 bg-white px-3 py-2 text-sm font-semibold text-emerald-700 hover:bg-emerald-100"
+          >
+            Flip Blight Card
+          </button>
+        ) : null}
+        {snapshot.blightLoss ? (
+          <div className="rounded border border-red-300 bg-red-50 px-3 py-2">
+            <p className="text-sm font-semibold text-red-700">Blight Loss: the blight card has run out and cannot be flipped again.</p>
+          </div>
+        ) : null}
         <p className="text-xs text-slate-500">
           Base pool uses 2 blight per player + 1. Current setup tracks {snapshot.playerCount} player(s).
         </p>

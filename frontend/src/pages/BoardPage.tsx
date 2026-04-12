@@ -4,6 +4,7 @@ import { WebsocketProvider } from 'y-websocket';
 import BoardView from '../components/BoardView';
 import GamestatePanel from '../components/GamestatePanel';
 import InvaderDeckSetupPage from '../components/InvaderDeckSetupPage';
+import EventDeckSetupPage from '../components/EventDeckSetupPage';
 
 type Game = {
   id: string;
@@ -28,7 +29,7 @@ const BoardPage: React.FC<BoardPageProps> = ({ gameId, game, onBack }) => {
   const [error] = useState<string | null>(null);
   const [currentPhase, setCurrentPhase] = useState(game.currentPhase ?? 'growth');
   const [turn, setTurn] = useState(game.turn ?? 1);
-  const [subpage, setSubpage] = useState<'board' | 'invader-setup'>('board');
+  const [subpage, setSubpage] = useState<'board' | 'invader-setup' | 'event-setup'>('board');
   const docRef = useRef<Y.Doc | null>(null);
   const providerRef = useRef<WebsocketProvider | null>(null);
 
@@ -141,6 +142,15 @@ const BoardPage: React.FC<BoardPageProps> = ({ gameId, game, onBack }) => {
                 >
                   Invader Setup
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setSubpage('event-setup')}
+                  className={`rounded px-3 py-1.5 text-sm font-medium ${
+                    subpage === 'event-setup' ? 'bg-slate-800 text-white' : 'text-slate-600 hover:bg-white'
+                  }`}
+                >
+                  Event Setup
+                </button>
               </div>
             </div>
             <div className="rounded-full border border-slate-300 bg-slate-50 px-4 py-2 text-sm font-medium">
@@ -176,8 +186,10 @@ const BoardPage: React.FC<BoardPageProps> = ({ gameId, game, onBack }) => {
             </div>
             <GamestatePanel docRef={docRef} />
           </div>
-        ) : (
+        ) : subpage === 'invader-setup' ? (
           <InvaderDeckSetupPage docRef={docRef} />
+        ) : (
+          <EventDeckSetupPage docRef={docRef} />
         )}
       </main>
     </div>
