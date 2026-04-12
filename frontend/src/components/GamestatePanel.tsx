@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import * as Y from 'yjs';
 import { DEFAULT_INVADER_DECK, type InvaderCardDefinition } from '../data/invaderCards';
 import {
@@ -37,7 +37,7 @@ const DEFAULT_FEAR_THRESHOLDS = [3, 6, 9];
 type GamestateSnapshot = {
   turn: number;
   phase: TurnPhase;
-  playerCount: number;
+  spiritCount: number;
   fearPool: number;
   fearThreshold: number;
   fearCardsEarned: number;
@@ -225,10 +225,11 @@ const ensureGamestateDefaults = (doc: Y.Doc) => {
     gameMap.set('boards', new Y.Map());
   }
 
-  const playerCount = clampMin(getSafeNumber(gameMap.get('playerCount'), 1), 1);
-  const fearThreshold = FEAR_PER_PLAYER * playerCount;
+  const spiritCount = clampMin(getSafeNumber(gameMap.get('spiritCount'), getSafeNumber(gameMap.get('playerCount'), 1)), 1);
+  const fearThreshold = FEAR_PER_PLAYER * spiritCount;
 
-  gameMap.set('playerCount', playerCount);
+  gameMap.set('spiritCount', spiritCount);
+  gameMap.set('playerCount', spiritCount);
   gameMap.set('fearThreshold', fearThreshold);
 
   const fearPool = clampMin(getSafeNumber(gameMap.get('fearPool'), 0), 0);
@@ -250,7 +251,7 @@ const ensureGamestateDefaults = (doc: Y.Doc) => {
   if (!gameMap.has('blightCard')) {
     gameMap.set('blightCard', 'Unknown Blight Card');
   }
-  const blightCount = clampMin(getSafeNumber(gameMap.get('blightCount'), playerCount * 2 + 1), 0);
+  const blightCount = clampMin(getSafeNumber(gameMap.get('blightCount'), spiritCount * 2 + 1), 0);
   gameMap.set('blightCount', blightCount);
 
   const rawBlightDeckCards = gameMap.get('blightDeckCards');
@@ -396,8 +397,8 @@ const readSnapshot = (doc: Y.Doc): GamestateSnapshot => {
   const blightDiscardCards = parseBlightCardList(gameMap.get('blightDiscardCards'));
   const currentBlightCard = parseSingleBlightCard(gameMap.get('currentBlightCard'));
 
-  const playerCount = clampMin(getSafeNumber(gameMap.get('playerCount'), 1), 1);
-  const fearThreshold = FEAR_PER_PLAYER * playerCount;
+  const spiritCount = clampMin(getSafeNumber(gameMap.get('spiritCount'), getSafeNumber(gameMap.get('playerCount'), 1)), 1);
+  const fearThreshold = FEAR_PER_PLAYER * spiritCount;
   const fearCardsEarned = clampMin(getSafeNumber(gameMap.get('fearCardsEarned'), 0), 0);
 
   let fearThresholds = DEFAULT_FEAR_THRESHOLDS;
@@ -427,7 +428,7 @@ const readSnapshot = (doc: Y.Doc): GamestateSnapshot => {
   return {
     turn: clampMin(getSafeNumber(gameMap.get('turn'), getSafeNumber(gameMap.get('round'), 1)), 1),
     phase,
-    playerCount,
+    spiritCount,
     fearPool: clampMin(getSafeNumber(gameMap.get('fearPool'), 0), 0),
     fearThreshold,
     fearCardsEarned,
@@ -460,7 +461,7 @@ const readSnapshot = (doc: Y.Doc): GamestateSnapshot => {
     currentBlightCard,
     blightLoss:
       (gameMap.get('blightLoss') as boolean) ||
-      !!(currentBlightCard && !currentBlightCard.healthy && clampMin(getSafeNumber(gameMap.get('blightCount'), playerCount * 2 + 1), 0) === 0),
+      !!(currentBlightCard && !currentBlightCard.healthy && clampMin(getSafeNumber(gameMap.get('blightCount'), spiritCount * 2 + 1), 0) === 0),
     decks: {
       invader: invaderDeckCards.length,
       fear: fearDeckCards.length,
@@ -473,7 +474,7 @@ const readSnapshot = (doc: Y.Doc): GamestateSnapshot => {
       blight: blightDiscardCards.length,
     },
     blightCard: (currentBlightCard?.name || (gameMap.get('blightCard') as string)) || 'Unknown Blight Card',
-    blightCount: clampMin(getSafeNumber(gameMap.get('blightCount'), playerCount * 2 + 1), 0),
+    blightCount: clampMin(getSafeNumber(gameMap.get('blightCount'), spiritCount * 2 + 1), 0),
     adversary: (gameConfig?.get('adversary') as string) || 'Unknown Adversary',
   };
 };
@@ -481,7 +482,7 @@ const readSnapshot = (doc: Y.Doc): GamestateSnapshot => {
 const initialSnapshot: GamestateSnapshot = {
   turn: 1,
   phase: 'growth',
-  playerCount: 1,
+  spiritCount: 1,
   fearPool: 0,
   fearThreshold: FEAR_PER_PLAYER,
   fearCardsEarned: 0,
@@ -558,28 +559,40 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef }) => {
   const [showEventDiscard, setShowEventDiscard] = useState(false);
 
   useEffect(() => {
-    const doc = docRef.current;
-    if (!doc) return;
+    let disposed = false;
+    let cleanup: (() => void) | null = null;
 
-    doc.transact(() => {
-      ensureGamestateDefaults(doc);
-    });
+    const attachWhenReady = () => {
+      const doc = docRef.current;
+      if (!doc) {
+        if (!disposed) {
+          requestAnimationFrame(attachWhenReady);
+        }
+        return;
+      }
 
-    const syncFromDoc = () => {
-      setSnapshot(readSnapshot(doc));
+      doc.transact(() => {
+        ensureGamestateDefaults(doc);
+      });
+
+      const syncFromDoc = () => {
+        setSnapshot(readSnapshot(doc));
+      };
+
+      syncFromDoc();
+      doc.on('update', syncFromDoc);
+      cleanup = () => {
+        doc.off('update', syncFromDoc);
+      };
     };
 
-    syncFromDoc();
-    doc.on('update', syncFromDoc);
+    attachWhenReady();
 
     return () => {
-      doc.off('update', syncFromDoc);
+      disposed = true;
+      cleanup?.();
     };
   }, [docRef]);
-
-  const phaseIndex = useMemo(() => {
-    return TURN_PHASES.indexOf(snapshot.phase);
-  }, [snapshot.phase]);
 
   const withGameMap = (mutator: (doc: Y.Doc, gameMap: Y.Map<unknown>) => void) => {
     const doc = docRef.current;
@@ -653,8 +666,8 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef }) => {
 
   const adjustFearPool = (delta: number) => {
     withGameMap((_doc, gameMap) => {
-      const playerCount = clampMin(getSafeNumber(gameMap.get('playerCount'), 1), 1);
-      const threshold = FEAR_PER_PLAYER * playerCount;
+      const spiritCount = clampMin(getSafeNumber(gameMap.get('spiritCount'), getSafeNumber(gameMap.get('playerCount'), 1)), 1);
+      const threshold = FEAR_PER_PLAYER * spiritCount;
 
       let fearPool = clampMin(getSafeNumber(gameMap.get('fearPool'), 0) + delta, 0);
       let fearCardsEarned = clampMin(getSafeNumber(gameMap.get('fearCardsEarned'), 0), 0);
@@ -910,8 +923,8 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef }) => {
         return;
       }
 
-      const playerCount = clampMin(getSafeNumber(gameMap.get('playerCount'), 1), 1);
-      const nextBlightCount = clampMin(nextBlightCard.blightPerPlayer * playerCount, 0);
+      const spiritCount = clampMin(getSafeNumber(gameMap.get('spiritCount'), getSafeNumber(gameMap.get('playerCount'), 1)), 1);
+      const nextBlightCount = clampMin(nextBlightCard.blightPerPlayer * spiritCount, 0);
 
       gameMap.set('blightDeckCards', remainingBlightDeck);
       gameMap.set('currentBlightCard', nextBlightCard);
@@ -926,9 +939,8 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef }) => {
   const eventActionsDisabled = snapshot.phase !== 'event';
 
   return (
-    <aside className="space-y-4 rounded-xl bg-white p-4 shadow">
+    <aside className="h-full min-h-0 space-y-4 overflow-y-scroll rounded-xl bg-white p-4 shadow">
       <section className="space-y-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-700">Turn and Phase</h2>
         <div className="grid grid-cols-2 gap-3">
           <StatPill label="Turn" value={snapshot.turn} />
           <StatPill label="Current Phase" value={snapshot.phase} />
@@ -964,16 +976,9 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef }) => {
             Next Phase
           </button>
         </div>
-        <p className="text-xs text-slate-500">
-          Leaving event phase discards the currently revealed event card automatically.
-        </p>
-        <p className="text-xs text-slate-500">
-          Slow to Growth advances to the next turn. Current phase index: {phaseIndex + 1} / {TURN_PHASES.length}.
-        </p>
       </section>
 
       <section className="space-y-3 rounded-lg border border-indigo-200 bg-indigo-50 p-3">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-indigo-700">Event Phase Actions</h2>
         <div className="flex gap-2">
           <button
             type="button"
@@ -1003,7 +1008,6 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef }) => {
       </section>
 
       <section className="space-y-3 rounded-lg border border-rose-200 bg-rose-50 p-3">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-rose-700">Fear and Terror</h2>
         <div className="grid grid-cols-2 gap-3">
           <StatPill label="Fear Pool" value={snapshot.fearPool} />
           <StatPill label="Next Fear Card" value={`${snapshot.fearPool}/${snapshot.fearThreshold}`} />
@@ -1068,7 +1072,6 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef }) => {
       </section>
 
       <section className="space-y-3 rounded-lg border border-amber-200 bg-amber-50 p-3">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-amber-700">Invader Track</h2>
         <div className="grid grid-cols-3 gap-2 rounded border border-slate-200 bg-white p-2">
           {([
             { key: 'ravage', label: 'Ravage', bgClass: 'bg-red-50', textClass: 'text-red-800' },
@@ -1135,6 +1138,54 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef }) => {
             Advance Track
           </button>
         </div>
+      </section>
+
+      <section className="space-y-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-emerald-700">Blight Card</h2>
+        <div className="rounded border border-emerald-200 bg-white px-3 py-2">
+          <p className="text-xs font-medium uppercase tracking-wide text-emerald-700">Card</p>
+          <p className="text-sm font-semibold text-slate-900">{snapshot.currentBlightCard?.name || snapshot.blightCard}</p>
+          {snapshot.currentBlightCard ? (
+            <>
+              <p className="text-xs text-slate-500">
+                Blight per player: {snapshot.currentBlightCard.blightPerPlayer} | {snapshot.currentBlightCard.healthy ? 'Still Healthy' : 'Not Healthy'}
+              </p>
+              <div className="mt-2 flex justify-center">
+                <img
+                  src={snapshot.currentBlightCard.faceUrl}
+                  alt={snapshot.currentBlightCard.name}
+                  className="rounded border border-slate-300 object-cover"
+                  style={{ width: 140, height: 200, minWidth: 140 }}
+                />
+              </div>
+            </>
+          ) : (
+            <p className="text-xs text-slate-500">Blight card not flipped yet.</p>
+          )}
+        </div>
+        <CounterRow
+          label="Blight Counter"
+          value={snapshot.blightCount}
+          onDecrement={() => adjustBlightCount(-1)}
+          onIncrement={() => adjustBlightCount(1)}
+        />
+        {snapshot.blightCount === 0 && !snapshot.blightLoss ? (
+          <button
+            type="button"
+            onClick={flipBlightCard}
+            className="w-full rounded border border-emerald-300 bg-white px-3 py-2 text-sm font-semibold text-emerald-700 hover:bg-emerald-100"
+          >
+            Flip Blight Card
+          </button>
+        ) : null}
+        {snapshot.blightLoss ? (
+          <div className="rounded border border-red-300 bg-red-50 px-3 py-2">
+            <p className="text-sm font-semibold text-red-700">Blight Loss: the blight card has run out and cannot be flipped again.</p>
+          </div>
+        ) : null}
+        <p className="text-xs text-slate-500">
+          Base pool uses 2 blight per spirit + 1. Current setup tracks {snapshot.spiritCount} spirit(s).
+        </p>
       </section>
 
       <section className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
@@ -1233,54 +1284,6 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef }) => {
 
         <StatPill label="Fear Discard" value={snapshot.discards.fear} />
         <StatPill label="Blight Discard" value={snapshot.discards.blight} />
-      </section>
-
-      <section className="space-y-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-emerald-700">Blight Card</h2>
-        <div className="rounded border border-emerald-200 bg-white px-3 py-2">
-          <p className="text-xs font-medium uppercase tracking-wide text-emerald-700">Card</p>
-          <p className="text-sm font-semibold text-slate-900">{snapshot.currentBlightCard?.name || snapshot.blightCard}</p>
-          {snapshot.currentBlightCard ? (
-            <>
-              <p className="text-xs text-slate-500">
-                Blight per player: {snapshot.currentBlightCard.blightPerPlayer} | {snapshot.currentBlightCard.healthy ? 'Still Healthy' : 'Not Healthy'}
-              </p>
-              <div className="mt-2 flex justify-center">
-                <img
-                  src={snapshot.currentBlightCard.faceUrl}
-                  alt={snapshot.currentBlightCard.name}
-                  className="rounded border border-slate-300 object-cover"
-                  style={{ width: 140, height: 200, minWidth: 140 }}
-                />
-              </div>
-            </>
-          ) : (
-            <p className="text-xs text-slate-500">Blight card not flipped yet.</p>
-          )}
-        </div>
-        <CounterRow
-          label="Blight Counter"
-          value={snapshot.blightCount}
-          onDecrement={() => adjustBlightCount(-1)}
-          onIncrement={() => adjustBlightCount(1)}
-        />
-        {snapshot.blightCount === 0 && !snapshot.blightLoss ? (
-          <button
-            type="button"
-            onClick={flipBlightCard}
-            className="w-full rounded border border-emerald-300 bg-white px-3 py-2 text-sm font-semibold text-emerald-700 hover:bg-emerald-100"
-          >
-            Flip Blight Card
-          </button>
-        ) : null}
-        {snapshot.blightLoss ? (
-          <div className="rounded border border-red-300 bg-red-50 px-3 py-2">
-            <p className="text-sm font-semibold text-red-700">Blight Loss: the blight card has run out and cannot be flipped again.</p>
-          </div>
-        ) : null}
-        <p className="text-xs text-slate-500">
-          Base pool uses 2 blight per player + 1. Current setup tracks {snapshot.playerCount} player(s).
-        </p>
       </section>
     </aside>
   );

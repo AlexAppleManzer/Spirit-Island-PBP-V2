@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { Stage, Layer, Image, Line, Text, Group, Rect } from 'react-konva';
 import useImage from 'use-image';
 import * as Y from 'yjs';
@@ -43,8 +43,8 @@ interface LandBoundsAsset {
   lands: Record<number, LandBounds>;
 }
 
-const VIEWPORT_WIDTH = 1200;
-const VIEWPORT_HEIGHT = 800;
+const DEFAULT_VIEWPORT_WIDTH = 1200;
+const DEFAULT_VIEWPORT_HEIGHT = 800;
 const STAGE_PADDING = 40;
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 2.5;
@@ -174,11 +174,24 @@ function pieceHasStrife(type: string): boolean {
 
 interface BoardViewProps {
   docRef: React.MutableRefObject<Y.Doc | null>;
+  onToolbarStateChange?: (state: { manageBoardsMode: boolean; zoomPercent: number }) => void;
 }
 
-const BoardView: React.FC<BoardViewProps> = ({ docRef }) => {
+export interface BoardViewHandle {
+  toggleManageBoardsMode: () => void;
+  zoomIn: () => void;
+  zoomOut: () => void;
+  resetZoom: () => void;
+  centerOnBoards: () => void;
+}
+
+const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, onToolbarStateChange }, ref) => {
   const stageRef = useRef(null);
   const canvasRef = useRef<HTMLDivElement>(null);
+  const [viewportSize, setViewportSize] = useState({
+    width: DEFAULT_VIEWPORT_WIDTH,
+    height: DEFAULT_VIEWPORT_HEIGHT,
+  });
   const [boardImage] = useImage('/board.png');
   
   // Debug: log image loading
@@ -222,6 +235,34 @@ const BoardView: React.FC<BoardViewProps> = ({ docRef }) => {
   const [showAdvancedTokens, setShowAdvancedTokens] = useState(false);
   const didAutoCenterRef = useRef(false);
 
+  useEffect(() => {
+    if (!canvasRef.current) return;
+
+    const updateViewportSize = () => {
+      if (!canvasRef.current) return;
+      const nextWidth = Math.max(320, Math.floor(canvasRef.current.clientWidth));
+      const nextHeight = Math.max(220, Math.floor(canvasRef.current.clientHeight));
+      setViewportSize((prev) => {
+        if (prev.width === nextWidth && prev.height === nextHeight) {
+          return prev;
+        }
+        return { width: nextWidth, height: nextHeight };
+      });
+    };
+
+    updateViewportSize();
+
+    const observer = new ResizeObserver(() => {
+      updateViewportSize();
+    });
+
+    observer.observe(canvasRef.current);
+
+    return () => {
+      observer.disconnect();
+    };
+  }, []);
+
   const stageBounds = useMemo(() => {
     let minX = 0;
     let minY = 0;
@@ -248,10 +289,18 @@ const BoardView: React.FC<BoardViewProps> = ({ docRef }) => {
       maxBottom,
       originX,
       originY,
-      width: Math.max(VIEWPORT_WIDTH, Math.ceil(maxRight + STAGE_PADDING - originX)),
-      height: Math.max(VIEWPORT_HEIGHT, Math.ceil(maxBottom + STAGE_PADDING - originY)),
+      width: Math.max(viewportSize.width, Math.ceil(maxRight + STAGE_PADDING - originX)),
+      height: Math.max(viewportSize.height, Math.ceil(maxBottom + STAGE_PADDING - originY)),
     };
-  }, [boards, draggingBoardId, dragPreviewPos, boardDimensions.width, boardDimensions.height]);
+  }, [
+    boards,
+    draggingBoardId,
+    dragPreviewPos,
+    boardDimensions.width,
+    boardDimensions.height,
+    viewportSize.width,
+    viewportSize.height,
+  ]);
 
   const toWorldPoint = (stagePixelX: number, stagePixelY: number) => ({
     x: stagePixelX / zoom + stageBounds.originX,
@@ -271,15 +320,15 @@ const BoardView: React.FC<BoardViewProps> = ({ docRef }) => {
     const stageCenterX = (worldCenterX - stageBounds.originX) * zoom;
     const stageCenterY = (worldCenterY - stageBounds.originY) * zoom;
 
-    const maxScrollLeft = Math.max(0, stageBounds.width * zoom - VIEWPORT_WIDTH);
-    const maxScrollTop = Math.max(0, stageBounds.height * zoom - VIEWPORT_HEIGHT);
+    const maxScrollLeft = Math.max(0, stageBounds.width * zoom - viewportSize.width);
+    const maxScrollTop = Math.max(0, stageBounds.height * zoom - viewportSize.height);
 
     canvasRef.current.scrollLeft = Math.min(
-      Math.max(0, stageCenterX - VIEWPORT_WIDTH / 2),
+      Math.max(0, stageCenterX - viewportSize.width / 2),
       maxScrollLeft
     );
     canvasRef.current.scrollTop = Math.min(
-      Math.max(0, stageCenterY - VIEWPORT_HEIGHT / 2),
+      Math.max(0, stageCenterY - viewportSize.height / 2),
       maxScrollTop
     );
   };
@@ -299,8 +348,8 @@ const BoardView: React.FC<BoardViewProps> = ({ docRef }) => {
     if (Math.abs(clampedZoom - prevZoom) < 0.0001) return;
 
     const rect = canvasRef.current.getBoundingClientRect();
-    const pointerViewportX = clientX !== undefined ? clientX - rect.left : VIEWPORT_WIDTH / 2;
-    const pointerViewportY = clientY !== undefined ? clientY - rect.top : VIEWPORT_HEIGHT / 2;
+    const pointerViewportX = clientX !== undefined ? clientX - rect.left : viewportSize.width / 2;
+    const pointerViewportY = clientY !== undefined ? clientY - rect.top : viewportSize.height / 2;
     const pointerStageX = canvasRef.current.scrollLeft + pointerViewportX;
     const pointerStageY = canvasRef.current.scrollTop + pointerViewportY;
     const pointerWorldX = pointerStageX / prevZoom + stageBounds.originX;
@@ -313,8 +362,8 @@ const BoardView: React.FC<BoardViewProps> = ({ docRef }) => {
 
       const newStageX = (pointerWorldX - stageBounds.originX) * clampedZoom;
       const newStageY = (pointerWorldY - stageBounds.originY) * clampedZoom;
-      const maxScrollLeft = Math.max(0, stageBounds.width * clampedZoom - VIEWPORT_WIDTH);
-      const maxScrollTop = Math.max(0, stageBounds.height * clampedZoom - VIEWPORT_HEIGHT);
+      const maxScrollLeft = Math.max(0, stageBounds.width * clampedZoom - viewportSize.width);
+      const maxScrollTop = Math.max(0, stageBounds.height * clampedZoom - viewportSize.height);
 
       canvasRef.current.scrollLeft = Math.min(
         Math.max(0, newStageX - pointerViewportX),
@@ -326,6 +375,32 @@ const BoardView: React.FC<BoardViewProps> = ({ docRef }) => {
       );
     });
   };
+
+  useEffect(() => {
+    onToolbarStateChange?.({
+      manageBoardsMode,
+      zoomPercent: Math.round(zoom * 100),
+    });
+  }, [manageBoardsMode, zoom, onToolbarStateChange]);
+
+  useImperativeHandle(ref, () => ({
+    toggleManageBoardsMode: () => {
+      setManageBoardsMode((prev) => !prev);
+    },
+    zoomIn: () => {
+      updateZoomAtPointer(zoom + ZOOM_STEP);
+    },
+    zoomOut: () => {
+      updateZoomAtPointer(zoom - ZOOM_STEP);
+    },
+    resetZoom: () => {
+      didAutoCenterRef.current = true;
+      updateZoomAtPointer(1);
+    },
+    centerOnBoards: () => {
+      centerViewOnBoards();
+    },
+  }), [zoom, centerViewOnBoards]);
 
   useEffect(() => {
     const loadLandBounds = async () => {
@@ -975,53 +1050,7 @@ const BoardView: React.FC<BoardViewProps> = ({ docRef }) => {
   };
 
   return (
-    <div className="flex flex-col gap-4">
-      {/* Manage Boards Toggle */}
-      <div className="flex items-center gap-2">
-        <button
-          onClick={() => setManageBoardsMode(!manageBoardsMode)}
-          className={`px-4 py-2 rounded transition font-medium ${
-            manageBoardsMode
-              ? 'bg-blue-600 text-white hover:bg-blue-700'
-              : 'bg-slate-200 text-slate-700 hover:bg-slate-300'
-          }`}
-        >
-          Manage Boards {manageBoardsMode ? '✓' : ''}
-        </button>
-        <span className="text-sm text-slate-600">Shift+drag empty canvas (or middle mouse) to pan view</span>
-        <button
-          onClick={() => updateZoomAtPointer(zoom - ZOOM_STEP)}
-          className="px-3 py-1 rounded bg-slate-200 text-slate-700 hover:bg-slate-300 transition font-semibold"
-          title="Zoom out"
-        >
-          -
-        </button>
-        <button
-          onClick={() => {
-            didAutoCenterRef.current = true;
-            updateZoomAtPointer(1);
-          }}
-          className="px-3 py-1 rounded bg-slate-100 text-slate-700 hover:bg-slate-200 transition font-medium"
-          title="Reset zoom"
-        >
-          {Math.round(zoom * 100)}%
-        </button>
-        <button
-          onClick={() => updateZoomAtPointer(zoom + ZOOM_STEP)}
-          className="px-3 py-1 rounded bg-slate-200 text-slate-700 hover:bg-slate-300 transition font-semibold"
-          title="Zoom in"
-        >
-          +
-        </button>
-        <button
-          onClick={() => centerViewOnBoards()}
-          className="px-3 py-1 rounded bg-slate-800 text-white hover:bg-slate-700 transition font-medium"
-          title="Center on boards"
-        >
-          Center
-        </button>
-      </div>
-
+    <div className="flex h-full min-h-0 min-w-0 flex-col gap-2 overflow-hidden">
       {/* Info and Controls - only show when manage mode is on */}
       {manageBoardsMode && (
       <div className="flex justify-between items-center gap-4">
@@ -1095,24 +1124,28 @@ const BoardView: React.FC<BoardViewProps> = ({ docRef }) => {
       )}
 
       {/* Canvas */}
+      <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
       <div
         ref={canvasRef}
-        className={`border rounded transition ${
+        className={`absolute inset-0 border rounded transition ${
           draggingBoardId || isPanningView
             ? 'cursor-grabbing'
             : 'cursor-grab'
-        } ${draggedPieceType ? 'bg-blue-100' : 'bg-gray-50'} hide-scrollbar`}
+        } ${draggedPieceType ? 'bg-blue-100' : 'bg-gray-50'} hide-scrollbar min-h-0 min-w-0`}
         onDragOver={handleDragOver}
         onDrop={handleDrop}
         onWheel={(e) => {
           e.preventDefault();
+          e.stopPropagation();
           const direction = e.deltaY > 0 ? -1 : 1;
           updateZoomAtPointer(zoom + direction * ZOOM_STEP, e.clientX, e.clientY);
         }}
         style={{
-          width: VIEWPORT_WIDTH,
-          height: VIEWPORT_HEIGHT,
-          position: 'relative',
+          width: '100%',
+          height: '100%',
+          minHeight: 0,
+          minWidth: 0,
+          position: 'absolute',
           display: 'block',
           overflow: 'auto',
           scrollbarWidth: 'none',
@@ -1460,9 +1493,10 @@ const BoardView: React.FC<BoardViewProps> = ({ docRef }) => {
           </Layer>
         </Stage>
       </div>
+      </div>
 
       {/* Piece Palette */}
-      <div className="flex flex-col gap-2 mt-4 p-4 bg-slate-100 rounded-lg">
+      <div className="mt-1 flex flex-col gap-2 rounded-lg bg-slate-100 p-3">
         <span className="text-sm font-semibold text-slate-700">Drag to place:</span>
 
         <div className="flex flex-wrap gap-2 items-center">
@@ -1682,6 +1716,6 @@ const BoardView: React.FC<BoardViewProps> = ({ docRef }) => {
       )}
     </div>
   );
-};
+});
 
 export default BoardView;

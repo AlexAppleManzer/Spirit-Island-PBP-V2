@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import BoardPage from './pages/BoardPage';
+import SpiritPresenceLayoutEditor from './components/SpiritPresenceLayoutEditor';
 
 const BACKEND_URL = 'http://localhost:3001';
 
@@ -14,6 +15,7 @@ type Game = {
   name: string;
   ownerId: number;
   playerIds: number[];
+  spiritCount?: number;
   playerCount?: number;
   status: string;
   currentPhase?: string;
@@ -315,7 +317,7 @@ function App() {
                           Phase: {game.currentPhase ?? 'growth'} · Turn {game.turn ?? 1}
                         </p>
                         <p className="text-xs text-slate-500">
-                          Players: {game.playerCount ?? game.playerIds.length}/6
+                          Spirits: {game.spiritCount ?? game.playerCount ?? game.playerIds.length}/6
                         </p>
                       </div>
                       <div className="flex items-center gap-2">
@@ -349,6 +351,8 @@ function App() {
               </div>
             </div>
           </div>
+
+          <SpiritPresenceLayoutEditor />
         </section>
       </div>
     </div>

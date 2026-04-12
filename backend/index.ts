@@ -15,6 +15,12 @@ import { getAdversary } from './data/adversaries.js';
 import { calculateTerrorLevel, applyFearModifier, initializeFearState } from './utils/fearUtils.js';
 import { executeEvent } from './utils/eventUtils.js';
 import { createFearDeck, createInvaderDeck, getRandomLand } from './utils/deckUtils.js';
+import {
+  listSpiritPresenceLayouts,
+  getSpiritPresenceLayout,
+  setSpiritPresenceLayout,
+  type PresenceSlot,
+} from './data/spiritPresenceLayouts.js';
 
 type Request = express.Request;
 type Response = express.Response;
@@ -25,6 +31,7 @@ type GameDto = {
   name: string;
   ownerId: number;
   playerIds: number[];
+  spiritCount: number;
   playerCount: number;
   status: GameStatus | string;
   currentPhase: string;
@@ -114,7 +121,7 @@ const ensureNestedMap = (parent: Y.Map<unknown>, key: string) => {
   return created;
 };
 
-const ensureGameDefaults = (gameMap: Y.Map<unknown>, playerCountFallback: number, adversaryId?: string) => {
+const ensureGameDefaults = (gameMap: Y.Map<unknown>, spiritCountFallback: number, adversaryId?: string) => {
   const legacyRound = getSafeNumber(gameMap.get('round'), 1);
   const turn = getSafeNumber(gameMap.get('turn'), legacyRound);
   gameMap.set('turn', clampMin(turn, 1));
@@ -130,10 +137,14 @@ const ensureGameDefaults = (gameMap: Y.Map<unknown>, playerCountFallback: number
     gameMap.set('boards', new Y.Map());
   }
 
-  const safePlayerFallback = clampMin(playerCountFallback, 1);
-  const playerCount = clampMin(getSafeNumber(gameMap.get('playerCount'), safePlayerFallback), 1);
-  gameMap.set('playerCount', playerCount);
-  gameMap.set('fearThreshold', FEAR_PER_PLAYER * playerCount);
+  const safeSpiritFallback = clampMin(spiritCountFallback, 1);
+  const spiritCount = clampMin(
+    getSafeNumber(gameMap.get('spiritCount'), getSafeNumber(gameMap.get('playerCount'), safeSpiritFallback)),
+    1
+  );
+  gameMap.set('spiritCount', spiritCount);
+  gameMap.set('playerCount', spiritCount);
+  gameMap.set('fearThreshold', FEAR_PER_PLAYER * spiritCount);
 
   // Initialize gameConfig with adversary and fear thresholds
   let gameConfig = gameMap.get('gameConfig');
@@ -166,7 +177,7 @@ const ensureGameDefaults = (gameMap: Y.Map<unknown>, playerCountFallback: number
   if (!gameMap.has('blightCard')) {
     gameMap.set('blightCard', 'Unknown Blight Card');
   }
-  const defaultBlight = playerCount * 2 + 1;
+  const defaultBlight = spiritCount * 2 + 1;
   const blightCount = clampMin(getSafeNumber(gameMap.get('blightCount'), defaultBlight), 0);
   gameMap.set('blightCount', blightCount);
 
@@ -260,12 +271,14 @@ const normalizePlayerIds = (playerIds: unknown): number[] => {
 
 const mapGameRowToDto = (row: Record<string, any>): GameDto => {
   const ids = normalizePlayerIds(row.player_ids);
+  const spiritCount = ids.length;
   return {
     id: String(row.id),
     name: (typeof row.name === 'string' && row.name.trim()) || `Game ${row.id}`,
     ownerId: toInt(row.owner_id) ?? 0,
     playerIds: ids,
-    playerCount: ids.length,
+    spiritCount,
+    playerCount: spiritCount,
     status: (row.status as GameStatus) || 'active',
     currentPhase: (row.current_phase as string) || 'growth',
     turn: toInt(row.round) ?? 1,
@@ -304,7 +317,7 @@ const saveGameStateToDb = async (gameId: string, ydoc: Y.Doc) => {
     const state = {
       currentPhase: (gameMap.get('currentPhase') as string) || 'growth',
       turn: getSafeNumber(gameMap.get('turn'), getSafeNumber(gameMap.get('round'), 1)),
-      playerCount: clampMin(getSafeNumber(gameMap.get('playerCount'), 1), 1),
+      spiritCount: clampMin(getSafeNumber(gameMap.get('spiritCount'), getSafeNumber(gameMap.get('playerCount'), 1)), 1),
       fearPool: clampMin(getSafeNumber(gameMap.get('fearPool'), 0), 0),
       fearCardsEarned: clampMin(getSafeNumber(gameMap.get('fearCardsEarned'), 0), 0),
       terrorLevel: clampMin(getSafeNumber(gameMap.get('terrorLevel'), 1), 1),
@@ -360,6 +373,16 @@ const saveGameStateToDb = async (gameId: string, ydoc: Y.Doc) => {
           x: boardData.get('x') || 0,
           y: boardData.get('y') || 0,
           rotation: boardData.get('rotation') || 0,
+          spiritState: {
+            energy: getSafeNumber(boardData.get('spiritState')?.get?.('energy'), 0),
+            presenceInSupply: clampMin(getSafeNumber(boardData.get('spiritState')?.get?.('presenceInSupply'), 13), 0),
+            presenceOnIsland: clampMin(getSafeNumber(boardData.get('spiritState')?.get?.('presenceOnIsland'), 0), 0),
+            presenceDestroyed: clampMin(getSafeNumber(boardData.get('spiritState')?.get?.('presenceDestroyed'), 0), 0),
+            presenceRemoved: clampMin(getSafeNumber(boardData.get('spiritState')?.get?.('presenceRemoved'), 0), 0),
+            presenceColor: typeof boardData.get('spiritState')?.get?.('presenceColor') === 'string'
+              ? boardData.get('spiritState').get('presenceColor')
+              : '#facc15',
+          },
           lands,
         };
       });
@@ -405,7 +428,9 @@ const loadGameStateFromDb = async (gameId: string, ydoc: Y.Doc) => {
         const loadedTurn = getSafeNumber(state.turn, getSafeNumber(state.round, 1));
         gameMap.set('turn', clampMin(loadedTurn, 1));
 
-        gameMap.set('playerCount', clampMin(getSafeNumber(state.playerCount, 1), 1));
+        const loadedSpiritCount = clampMin(getSafeNumber(state.spiritCount, getSafeNumber(state.playerCount, 1)), 1);
+        gameMap.set('spiritCount', loadedSpiritCount);
+        gameMap.set('playerCount', loadedSpiritCount);
         gameMap.set('fearPool', clampMin(getSafeNumber(state.fearPool, 0), 0));
         gameMap.set('fearCardsEarned', clampMin(getSafeNumber(state.fearCardsEarned, 0), 0));
         gameMap.set('terrorLevel', clampMin(getSafeNumber(state.terrorLevel, 1), 1));
@@ -459,6 +484,21 @@ const loadGameStateFromDb = async (gameId: string, ydoc: Y.Doc) => {
             playerBoard.set('x', x);
             playerBoard.set('y', y);
             playerBoard.set('rotation', boardData.rotation || 0);
+
+            const spiritState = new Y.Map();
+            const loadedSpiritState = boardData.spiritState && typeof boardData.spiritState === 'object'
+              ? boardData.spiritState
+              : {};
+            spiritState.set('energy', getSafeNumber(loadedSpiritState.energy, 0));
+            spiritState.set('presenceInSupply', clampMin(getSafeNumber(loadedSpiritState.presenceInSupply, 13), 0));
+            spiritState.set('presenceOnIsland', clampMin(getSafeNumber(loadedSpiritState.presenceOnIsland, 0), 0));
+            spiritState.set('presenceDestroyed', clampMin(getSafeNumber(loadedSpiritState.presenceDestroyed, 0), 0));
+            spiritState.set('presenceRemoved', clampMin(getSafeNumber(loadedSpiritState.presenceRemoved, 0), 0));
+            spiritState.set(
+              'presenceColor',
+              typeof loadedSpiritState.presenceColor === 'string' ? loadedSpiritState.presenceColor : '#facc15'
+            );
+            playerBoard.set('spiritState', spiritState);
             
             const lands = new Y.Map();
             Object.entries(boardData.lands).forEach(([landId, pieces]: any) => {
@@ -604,6 +644,15 @@ const initializePlayerBoard = (ydoc: Y.Doc, playerId: number, boardId: string) =
       lands.set(i.toString(), new Y.Array());
     }
     playerBoard.set('lands', lands);
+
+    const spiritState = new Y.Map();
+    spiritState.set('energy', 0);
+    spiritState.set('presenceInSupply', 13);
+    spiritState.set('presenceOnIsland', 0);
+    spiritState.set('presenceDestroyed', 0);
+    spiritState.set('presenceRemoved', 0);
+    spiritState.set('presenceColor', '#facc15');
+    playerBoard.set('spiritState', spiritState);
     
     boards.set(boardId, playerBoard);
   }
@@ -794,6 +843,7 @@ app.post('/api/games/:id/join', verifyToken, async (req: Request, res: Response)
     }
 
     ensureGameDefaults(gameMap, updatedPlayerIds.length);
+    gameMap.set('spiritCount', updatedPlayerIds.length);
     gameMap.set('playerCount', updatedPlayerIds.length);
     gameMap.set('fearThreshold', FEAR_PER_PLAYER * updatedPlayerIds.length);
 
@@ -851,6 +901,7 @@ app.post('/api/games/:id/leave', verifyToken, async (req: Request, res: Response
     }
 
     ensureGameDefaults(gameMap, Math.max(1, updatedPlayerIds.length));
+    gameMap.set('spiritCount', Math.max(1, updatedPlayerIds.length));
     gameMap.set('playerCount', Math.max(1, updatedPlayerIds.length));
     gameMap.set('fearThreshold', FEAR_PER_PLAYER * Math.max(1, updatedPlayerIds.length));
 
@@ -877,6 +928,37 @@ app.get('/api/adversaries', (req: Request, res: Response) => {
     res.json(adversaries);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Get persistent spirit presence layouts (outside game instances)
+app.get('/api/spirits/layouts', verifyToken, (req: Request, res: Response) => {
+  try {
+    res.json({ layouts: listSpiritPresenceLayouts() });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Set a persistent spirit presence layout (must contain 13 slots)
+app.put('/api/spirits/:spiritId/layout', verifyToken, (req: Request, res: Response) => {
+  try {
+    const { spiritId } = req.params;
+    const slots = Array.isArray(req.body?.slots) ? req.body.slots : [];
+    const layout = setSpiritPresenceLayout(spiritId, slots as PresenceSlot[]);
+    res.json({ layout });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.get('/api/spirits/:spiritId/layout', verifyToken, (req: Request, res: Response) => {
+  try {
+    const { spiritId } = req.params;
+    const layout = getSpiritPresenceLayout(spiritId);
+    res.json({ layout });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
   }
 });
 
