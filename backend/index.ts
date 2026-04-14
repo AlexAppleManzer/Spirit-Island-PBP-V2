@@ -137,10 +137,10 @@ const ensureGameDefaults = (gameMap: Y.Map<unknown>, spiritCountFallback: number
     gameMap.set('boards', new Y.Map());
   }
 
-  const safeSpiritFallback = clampMin(spiritCountFallback, 1);
+  const safeSpiritFallback = clampMin(spiritCountFallback, 0);
   const spiritCount = clampMin(
     getSafeNumber(gameMap.get('spiritCount'), getSafeNumber(gameMap.get('playerCount'), safeSpiritFallback)),
-    1
+    0
   );
   gameMap.set('spiritCount', spiritCount);
   gameMap.set('playerCount', spiritCount);
@@ -317,7 +317,7 @@ const saveGameStateToDb = async (gameId: string, ydoc: Y.Doc) => {
     const state = {
       currentPhase: (gameMap.get('currentPhase') as string) || 'growth',
       turn: getSafeNumber(gameMap.get('turn'), getSafeNumber(gameMap.get('round'), 1)),
-      spiritCount: clampMin(getSafeNumber(gameMap.get('spiritCount'), getSafeNumber(gameMap.get('playerCount'), 1)), 1),
+      spiritCount: clampMin(getSafeNumber(gameMap.get('spiritCount'), getSafeNumber(gameMap.get('playerCount'), 0)), 0),
       fearPool: clampMin(getSafeNumber(gameMap.get('fearPool'), 0), 0),
       fearCardsEarned: clampMin(getSafeNumber(gameMap.get('fearCardsEarned'), 0), 0),
       terrorLevel: clampMin(getSafeNumber(gameMap.get('terrorLevel'), 1), 1),
@@ -428,7 +428,7 @@ const loadGameStateFromDb = async (gameId: string, ydoc: Y.Doc) => {
         const loadedTurn = getSafeNumber(state.turn, getSafeNumber(state.round, 1));
         gameMap.set('turn', clampMin(loadedTurn, 1));
 
-        const loadedSpiritCount = clampMin(getSafeNumber(state.spiritCount, getSafeNumber(state.playerCount, 1)), 1);
+        const loadedSpiritCount = clampMin(getSafeNumber(state.spiritCount, getSafeNumber(state.playerCount, 0)), 0);
         gameMap.set('spiritCount', loadedSpiritCount);
         gameMap.set('playerCount', loadedSpiritCount);
         gameMap.set('fearPool', clampMin(getSafeNumber(state.fearPool, 0), 0));
@@ -756,10 +756,9 @@ app.post('/api/games', verifyToken, async (req: Request, res: Response) => {
 
     const createdGame = result.rows[0];
     const ydoc = await getGameDoc(String(createdGame.id));
-    initializePlayerBoard(ydoc, userId, 'A');
     // Pass adversaryId if provided
     const selectedAdversaryId = typeof adversaryId === 'string' ? adversaryId : undefined;
-    ensureGameDefaults(ydoc.getMap('game'), 1, selectedAdversaryId);
+    ensureGameDefaults(ydoc.getMap('game'), 0, selectedAdversaryId);
 
     res.status(201).json(mapGameRowToDto(createdGame));
   } catch (err: any) {
@@ -943,9 +942,18 @@ app.get('/api/spirits/layouts', verifyToken, (req: Request, res: Response) => {
 // Set a persistent spirit presence layout (must contain 13 slots)
 app.put('/api/spirits/:spiritId/layout', verifyToken, (req: Request, res: Response) => {
   try {
-    const { spiritId } = req.params;
+    const spiritId = Array.isArray(req.params.spiritId) ? req.params.spiritId[0] : req.params.spiritId;
+    if (!spiritId) {
+      return res.status(400).json({ error: 'Missing spiritId parameter.' });
+    }
     const slots = Array.isArray(req.body?.slots) ? req.body.slots : [];
-    const layout = setSpiritPresenceLayout(spiritId, slots as PresenceSlot[]);
+    const layout = setSpiritPresenceLayout(
+      spiritId,
+      slots as PresenceSlot[],
+      req.body?.baseEnergyGain,
+      req.body?.baseCardPlays,
+      req.body?.baseElements,
+    );
     res.json({ layout });
   } catch (err: any) {
     res.status(400).json({ error: err.message });
@@ -954,7 +962,10 @@ app.put('/api/spirits/:spiritId/layout', verifyToken, (req: Request, res: Respon
 
 app.get('/api/spirits/:spiritId/layout', verifyToken, (req: Request, res: Response) => {
   try {
-    const { spiritId } = req.params;
+    const spiritId = Array.isArray(req.params.spiritId) ? req.params.spiritId[0] : req.params.spiritId;
+    if (!spiritId) {
+      return res.status(400).json({ error: 'Missing spiritId parameter.' });
+    }
     const layout = getSpiritPresenceLayout(spiritId);
     res.json({ layout });
   } catch (err: any) {

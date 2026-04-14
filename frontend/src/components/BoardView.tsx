@@ -1,5 +1,5 @@
 import React, { useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
-import { Stage, Layer, Image, Line, Text, Group, Rect } from 'react-konva';
+import { Stage, Layer, Image, Line, Text, Group, Rect, Circle } from 'react-konva';
 import useImage from 'use-image';
 import * as Y from 'yjs';
 
@@ -7,6 +7,8 @@ interface GamePiece {
   pieceId?: string;
   type: string;
   subtype?: string;
+  presenceSlotIndex?: number;
+  presenceReward?: string;
   damage?: number;
   health?: number;
   count?: number;
@@ -233,6 +235,7 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
   const [editorDamage, setEditorDamage] = useState(0);
   const [editorStrife, setEditorStrife] = useState(0);
   const [showAdvancedTokens, setShowAdvancedTokens] = useState(false);
+  const [spiritColors, setSpiritColors] = useState<Map<string, string>>(new Map());
   const didAutoCenterRef = useRef(false);
 
   useEffect(() => {
@@ -436,14 +439,21 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
 
     const updateBoards = () => {
       const updatedBoards = new Map<string, any>();
+      const nextColors = new Map<string, string>();
       const boardsMap = gameMap.get('boards') as Y.Map<any> | undefined;
       if (boardsMap) {
         boardsMap.forEach((boardData: any, boardId: string) => {
           updatedBoards.set(boardId, boardData);
+          const spiritState = boardData.get('spiritState');
+          if (spiritState instanceof Y.Map) {
+            const color = spiritState.get('presenceColor');
+            if (typeof color === 'string') nextColors.set(boardId, color);
+          }
         });
       }
       console.log('Updated boards:', Array.from(updatedBoards.keys()), 'count:', updatedBoards.size);
       setBoards(updatedBoards);
+      setSpiritColors(nextColors);
     };
 
     // Call updateBoards immediately
@@ -468,9 +478,21 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
 
-    console.log('DROP EVENT - draggedPieceType:', draggedPieceType);
+    // Support external drags (e.g. blight token dragged from GamestatePanel blight card)
+    const externalPieceType = e.dataTransfer.getData('piece-type');
+    const isBlightFromCard = externalPieceType === 'blight-from-card';
+    const isPresenceFromPanel = externalPieceType === 'presence-from-panel';
+    const spiritBoardId = isPresenceFromPanel ? e.dataTransfer.getData('spirit-board-id') : '';
+    const spiritSlotIndexRaw = isPresenceFromPanel ? e.dataTransfer.getData('spirit-slot-index') : '';
+    const spiritSlotIndex = Number.parseInt(spiritSlotIndexRaw, 10);
+    const spiritSlotRewardRaw = isPresenceFromPanel ? e.dataTransfer.getData('spirit-slot-reward') : '';
+    const spiritSlotReward = spiritSlotRewardRaw.trim();
+    const hasPresenceSlotIndex = Number.isInteger(spiritSlotIndex) && spiritSlotIndex >= 0;
+    const activePieceType = draggedPieceType ?? (isBlightFromCard ? 'blight' : isPresenceFromPanel ? 'presence' : null);
 
-    if (!draggedPieceType || !landBounds || !canvasRef.current || draggingPiece) {
+    console.log('DROP EVENT - activePieceType:', activePieceType);
+
+    if (!activePieceType || !landBounds || !canvasRef.current || draggingPiece) {
       console.log('Early exit - missing data');
       return;
     }
@@ -490,7 +512,7 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
     if (!boardsMap) return;
 
     // Strife must be dropped onto an existing invader, not a land
-    if (draggedPieceType === 'strife') {
+    if (activePieceType === 'strife') {
       const invaderMatch = findInvaderAtWorldPoint({ x: dropX, y: dropY });
       if (invaderMatch) {
         const { boardId, landId, pieceIndex, piece } = invaderMatch;
@@ -545,10 +567,12 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
             const piecesArray = landsMap.get(landId) as Y.Array<any>;
 
             const newPiece: GamePiece = {
-              pieceId: `${draggedPieceType}-${Date.now()}-${Math.floor(Math.random() * 1000000)}`,
-              type: draggedPieceType,
-              subtype: draggedPieceType,
-              damage: getDefaultDamage(draggedPieceType),
+              pieceId: `${activePieceType}-${Date.now()}-${Math.floor(Math.random() * 1000000)}`,
+              type: activePieceType,
+              subtype: activePieceType === 'presence' ? spiritBoardId : activePieceType,
+              presenceSlotIndex: activePieceType === 'presence' && hasPresenceSlotIndex ? spiritSlotIndex : undefined,
+              presenceReward: activePieceType === 'presence' && spiritSlotReward.length > 0 ? spiritSlotReward : undefined,
+              damage: getDefaultDamage(activePieceType),
               count: 1,
               strife: 0,
               updatedBy: 'user',
@@ -562,6 +586,47 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
         }
       }
     });
+
+    // When blight is dragged from the blight card, decrement the blight counter
+    if (isBlightFromCard && foundLand) {
+      const currentCount = typeof gameMap.get('blightCount') === 'number'
+        ? (gameMap.get('blightCount') as number)
+        : 0;
+      gameMap.set('blightCount', Math.max(0, currentCount - 1));
+    }
+
+    // When presence is dragged from the spirit panel, decrement presenceInSupply
+    if (isPresenceFromPanel && foundLand && spiritBoardId) {
+      const boardsMap2 = gameMap.get('boards') as Y.Map<any> | undefined;
+      if (boardsMap2) {
+        const boardData = boardsMap2.get(spiritBoardId) as any;
+        if (boardData) {
+          const spiritState = boardData.get('spiritState');
+          if (spiritState instanceof Y.Map) {
+            const rawSupplySlots = spiritState.get('presenceSupplySlotIndices');
+            const currentSupplySlots = Array.isArray(rawSupplySlots)
+              ? [...new Set(rawSupplySlots.filter((entry): entry is number => typeof entry === 'number' && Number.isFinite(entry)).map((entry) => Math.floor(entry)).filter((entry) => entry >= 0 && entry < 13))]
+              : [];
+            const nextSupplySlots = hasPresenceSlotIndex
+              ? currentSupplySlots.filter((entry) => entry !== spiritSlotIndex)
+              : currentSupplySlots.slice(0, Math.max(0, currentSupplySlots.length - 1));
+            const current = typeof spiritState.get('presenceInSupply') === 'number'
+              ? (spiritState.get('presenceInSupply') as number)
+              : currentSupplySlots.length;
+            doc.transact(() => {
+              if (currentSupplySlots.length > 0) {
+                spiritState.set('presenceSupplySlotIndices', nextSupplySlots);
+                spiritState.set('presenceInSupply', nextSupplySlots.length);
+              } else {
+                spiritState.set('presenceInSupply', Math.max(0, current - 1));
+              }
+              spiritState.set('presenceOnIsland', Math.max(0, (typeof spiritState.get('presenceOnIsland') === 'number' ? spiritState.get('presenceOnIsland') as number : 0) + 1));
+            });
+          }
+        }
+      }
+    }
+
     setDraggedPieceType(null);
   };
 
@@ -940,6 +1005,82 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
             },
             targetLand
           );
+        } else if (draggingPiece.piece.type === 'presence') {
+          // Drag presence off a land → return it to the spirit panel
+          const spiritBoardId2 = draggingPiece.piece.subtype ?? draggingPiece.boardId;
+          const slotDropTarget = document
+            .elementsFromPoint(e.clientX, e.clientY)
+            .find((element) => {
+              if (!(element instanceof HTMLElement)) {
+                return false;
+              }
+              if (element.dataset.spiritBoardId !== spiritBoardId2) {
+                return false;
+              }
+              return typeof element.dataset.presenceSlotIndex === 'string';
+            }) as HTMLElement | undefined;
+          const droppedSlotIndex = slotDropTarget
+            ? Number.parseInt(slotDropTarget.dataset.presenceSlotIndex ?? '', 10)
+            : Number.NaN;
+          const sourceSlotIndex = typeof draggingPiece.piece.presenceSlotIndex === 'number'
+            ? Math.floor(draggingPiece.piece.presenceSlotIndex)
+            : Number.NaN;
+          const preferredSlotIndex: number = Number.isInteger(droppedSlotIndex)
+            ? droppedSlotIndex
+            : sourceSlotIndex;
+
+          deletePieceAtLocation({
+            boardId: draggingPiece.boardId,
+            landId: draggingPiece.landId,
+            pieceIndex: draggingPiece.pieceIndex,
+          });
+          const doc2 = docRef.current;
+          if (doc2) {
+            const gameMap2 = doc2.getMap('game') as Y.Map<unknown>;
+            doc2.transact(() => {
+              const boards2 = gameMap2.get('boards') as Y.Map<unknown> | undefined;
+              if (!(boards2 instanceof Y.Map)) return;
+              const boardData2 = boards2.get(spiritBoardId2) as Y.Map<unknown> | undefined;
+              if (!(boardData2 instanceof Y.Map)) return;
+              const spiritState2 = boardData2.get('spiritState') as Y.Map<unknown> | undefined;
+              if (!(spiritState2 instanceof Y.Map)) return;
+              const inSupply = typeof spiritState2.get('presenceInSupply') === 'number'
+                ? (spiritState2.get('presenceInSupply') as number)
+                : 0;
+              const onIsland = typeof spiritState2.get('presenceOnIsland') === 'number'
+                ? (spiritState2.get('presenceOnIsland') as number)
+                : 0;
+              const rawSupplySlots = spiritState2.get('presenceSupplySlotIndices');
+              const currentSupplySlots = Array.isArray(rawSupplySlots)
+                ? [...new Set(rawSupplySlots
+                  .filter((entry): entry is number => typeof entry === 'number' && Number.isFinite(entry))
+                  .map((entry) => Math.floor(entry))
+                  .filter((entry) => entry >= 0 && entry < 13))]
+                : [];
+
+              let nextSupplySlots = [...currentSupplySlots];
+              if (nextSupplySlots.length < 13) {
+                if (Number.isInteger(preferredSlotIndex) && preferredSlotIndex >= 0 && preferredSlotIndex < 13) {
+                  if (!nextSupplySlots.includes(preferredSlotIndex)) {
+                    nextSupplySlots.push(preferredSlotIndex);
+                  }
+                } else {
+                  for (let slotIndex = 0; slotIndex < 13; slotIndex += 1) {
+                    if (!nextSupplySlots.includes(slotIndex)) {
+                      nextSupplySlots.push(slotIndex);
+                      break;
+                    }
+                  }
+                }
+              }
+
+              nextSupplySlots = [...new Set(nextSupplySlots)].sort((a, b) => a - b);
+
+              spiritState2.set('presenceSupplySlotIndices', nextSupplySlots);
+              spiritState2.set('presenceInSupply', nextSupplySlots.length || Math.max(0, inSupply + 1));
+              spiritState2.set('presenceOnIsland', Math.max(0, onIsland - 1));
+            });
+          }
         }
       } else {
         const boardData = boards.get(pendingPiecePointer.boardId);
@@ -1384,23 +1525,36 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
                               }}
                             >
                               <Group rotation={damageRotation}>
-                                {img && info.count > 1 &&
-                                  Array.from({ length: Math.min(info.count, 4) - 1 }).map((_, layerIndex, layers) => {
-                                    const depth = layers.length - layerIndex;
-                                    return (
-                                      <Image
-                                        key={`stack-layer-${boardId}-${landId}-${groupKey}-${depth}`}
-                                        image={img}
-                                        x={-16 + depth * STACK_LAYER_OFFSET_PX}
-                                        y={-16}
-                                        width={PIECE_SIZE}
-                                        height={PIECE_SIZE}
-                                        opacity={1}
-                                      />
-                                    );
-                                  })}
+                                {info.piece.type === 'presence' ? (
+                                  <Circle
+                                    radius={PIECE_SIZE / 2}
+                                    fill={spiritColors.get(info.piece.subtype ?? '') ?? '#888888'}
+                                    stroke="rgba(255,255,255,0.85)"
+                                    strokeWidth={2}
+                                    shadowBlur={4}
+                                    shadowColor="rgba(0,0,0,0.4)"
+                                  />
+                                ) : (
+                                  <>
+                                    {img && info.count > 1 &&
+                                      Array.from({ length: Math.min(info.count, 4) - 1 }).map((_, layerIndex, layers) => {
+                                        const depth = layers.length - layerIndex;
+                                        return (
+                                          <Image
+                                            key={`stack-layer-${boardId}-${landId}-${groupKey}-${depth}`}
+                                            image={img}
+                                            x={-16 + depth * STACK_LAYER_OFFSET_PX}
+                                            y={-16}
+                                            width={PIECE_SIZE}
+                                            height={PIECE_SIZE}
+                                            opacity={1}
+                                          />
+                                        );
+                                      })}
 
-                                {img && <Image image={img} x={-16} y={-16} width={PIECE_SIZE} height={PIECE_SIZE} />}
+                                    {img && <Image image={img} x={-16} y={-16} width={PIECE_SIZE} height={PIECE_SIZE} />}
+                                  </>
+                                )}
                               </Group>
 
                               {strifeTokenImage && strifeCount > 0 && (
@@ -1493,10 +1647,10 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
           </Layer>
         </Stage>
       </div>
-      </div>
 
-      {/* Piece Palette */}
-      <div className="mt-1 flex flex-col gap-2 rounded-lg bg-slate-100 p-3">
+      {/* Piece Palette Overlay */}
+      <div className="pointer-events-none absolute bottom-2 left-2 right-2 z-20">
+      <div className="pointer-events-auto inline-flex max-w-full flex-col gap-2 rounded border border-slate-200/60 bg-white/85 p-2 backdrop-blur-sm">
         <span className="text-sm font-semibold text-slate-700">Drag to place:</span>
 
         <div className="flex flex-wrap gap-2 items-center">
@@ -1579,7 +1733,6 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
           {([
             { type: 'badlands', src: '/TokenBadlands.png', label: 'Badlands', img: badlandsImage },
             { type: 'beast', src: '/TokenBeasts.png', label: 'Beast', img: beastsImage },
-            { type: 'blight', src: '/Blight.png', label: 'Blight', img: blightImage },
             { type: 'disease', src: '/TokenDisease.png', label: 'Disease', img: diseaseImage },
             { type: 'wilds', src: '/TokenWilds.png', label: 'Wilds', img: wildsImage },
             { type: 'strife', src: '/TokenStrife.png', label: 'Strife', img: strifeTokenImage },
@@ -1613,6 +1766,7 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
           </button>
 
           {showAdvancedTokens && ([
+            { type: 'blight', src: '/Blight.png', label: 'Blight from the box', img: blightImage },
             { type: 'deeps', src: '/TokenDeeps1.png', label: 'Deeps', img: deepsImage },
             { type: 'quake', src: '/TokenQuake.png', label: 'Quake', img: quakeImage },
             { type: 'vitality', src: '/TokenVitality.png', label: 'Vitality', img: vitalityImage },
@@ -1637,6 +1791,8 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
             </div>
           ))}
         </div>
+      </div>
+      </div>
       </div>
 
       {editingPiece && (

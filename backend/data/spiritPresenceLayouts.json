@@ -3,58 +3,138 @@
     "spiritId": "devouring-teeth-lurk-underfoot",
     "slots": [
       {
-        "x": 226,
-        "y": 131
-      },
-      {
         "x": 225,
-        "y": 195
+        "y": 130,
+        "effects": [
+          {
+            "kind": "add-element",
+            "element": "fire",
+            "value": 1
+          }
+        ]
       },
       {
         "x": 259,
-        "y": 130
+        "y": 130,
+        "effects": [
+          {
+            "kind": "set-energy-base",
+            "value": 3
+          }
+        ]
       },
       {
-        "x": 240,
-        "y": 389
+        "x": 293,
+        "y": 129,
+        "effects": [
+          {
+            "kind": "set-energy-base",
+            "value": 4
+          }
+        ]
       },
       {
-        "x": 160,
-        "y": 379
+        "x": 326,
+        "y": 130,
+        "effects": [
+          {
+            "kind": "add-element",
+            "element": "animal",
+            "value": 1
+          }
+        ]
       },
       {
-        "x": 93,
-        "y": 333
+        "x": 359,
+        "y": 130,
+        "effects": [
+          {
+            "kind": "set-energy-base",
+            "value": 6
+          }
+        ]
       },
       {
-        "x": 55,
-        "y": 261
+        "x": 393,
+        "y": 130,
+        "effects": [
+          {
+            "kind": "set-energy-base",
+            "value": 7
+          }
+        ]
       },
       {
-        "x": 55,
-        "y": 179
+        "x": 226,
+        "y": 194,
+        "effects": [
+          {
+            "kind": "set-card-plays-base",
+            "value": 2
+          }
+        ]
       },
       {
-        "x": 93,
-        "y": 107
+        "x": 259,
+        "y": 195,
+        "effects": [
+          {
+            "kind": "add-element",
+            "element": "animal",
+            "value": 1
+          }
+        ]
       },
       {
-        "x": 160,
-        "y": 61
+        "x": 293,
+        "y": 194,
+        "effects": [
+          {
+            "kind": "add-element",
+            "element": "fire",
+            "value": 1
+          }
+        ]
       },
       {
-        "x": 240,
-        "y": 51
+        "x": 326,
+        "y": 195,
+        "effects": [
+          {
+            "kind": "set-card-plays-base",
+            "value": 3
+          }
+        ]
       },
       {
-        "x": 317,
-        "y": 80
+        "x": 360,
+        "y": 195,
+        "effects": [
+          {
+            "kind": "add-element",
+            "element": "earth",
+            "value": 1
+          }
+        ]
       },
       {
-        "x": 371,
-        "y": 141
+        "x": 392,
+        "y": 196,
+        "effects": [
+          {
+            "kind": "set-card-plays-base",
+            "value": 4
+          }
+        ]
+      },
+      {
+        "x": 27,
+        "y": 37
       }
     ],
-    "updatedAt": "2026-04-12T06:47:04.918Z"
+    "baseEnergyGain": 2,
+    "baseCardPlays": 1,
+    "baseElements": {},
+    "updatedAt": "2026-04-14T06:08:39.113Z"
   }
 }

@@ -7,6 +7,12 @@ import InvaderDeckSetupPage from '../components/InvaderDeckSetupPage';
 import EventDeckSetupPage from '../components/EventDeckSetupPage';
 import SpiritPanelPage from '../components/SpiritPanelPage';
 
+const MIN_LEFT_PANEL_PERCENT = 20;
+const MAX_LEFT_PANEL_PERCENT = 55;
+const MIN_TOP_PANEL_HEIGHT = 180;
+const MIN_BOTTOM_PANEL_HEIGHT = 160;
+const RESIZER_THICKNESS = 8;
+
 type Game = {
   id: string;
   name: string;
@@ -30,9 +36,89 @@ const BoardPage: React.FC<BoardPageProps> = ({ gameId, game, onBack }) => {
   const [error] = useState<string | null>(null);
   const [subpage, setSubpage] = useState<'board' | 'spirit' | 'invader-setup' | 'event-setup'>('board');
   const [boardToolbarState, setBoardToolbarState] = useState({ manageBoardsMode: false, zoomPercent: 100 });
+  const [resizeModeEnabled, setResizeModeEnabled] = useState(false);
+  const [leftPanelPercent, setLeftPanelPercent] = useState(30);
+  const [bottomPanelHeight, setBottomPanelHeight] = useState(260);
+  const [savedBottomPanelHeight, setSavedBottomPanelHeight] = useState<number | null>(null);
+  const [activeResizer, setActiveResizer] = useState<'vertical' | 'horizontal' | null>(null);
   const docRef = useRef<Y.Doc | null>(null);
   const providerRef = useRef<WebsocketProvider | null>(null);
   const boardViewRef = useRef<BoardViewHandle | null>(null);
+  const boardLayoutRef = useRef<HTMLDivElement | null>(null);
+
+  const clamp = (value: number, min: number, max: number) => {
+    return Math.min(max, Math.max(min, value));
+  };
+
+  const getMaxBottomPanelHeight = () => {
+    if (!boardLayoutRef.current) {
+      return null;
+    }
+
+    const bounds = boardLayoutRef.current.getBoundingClientRect();
+    return Math.max(
+      MIN_BOTTOM_PANEL_HEIGHT,
+      bounds.height - MIN_TOP_PANEL_HEIGHT - (resizeModeEnabled ? RESIZER_THICKNESS : 0)
+    );
+  };
+
+  const toggleSpiritPanelHeight = () => {
+    const maxBottom = getMaxBottomPanelHeight();
+    if (maxBottom === null) return;
+
+    if (savedBottomPanelHeight === null) {
+      setSavedBottomPanelHeight(bottomPanelHeight);
+      setBottomPanelHeight(maxBottom);
+      return;
+    }
+
+    setBottomPanelHeight(clamp(savedBottomPanelHeight, MIN_BOTTOM_PANEL_HEIGHT, maxBottom));
+    setSavedBottomPanelHeight(null);
+  };
+
+  useEffect(() => {
+    if (!resizeModeEnabled) {
+      setActiveResizer(null);
+    }
+  }, [resizeModeEnabled]);
+
+  useEffect(() => {
+    if (!activeResizer) {
+      return;
+    }
+
+    const handleMouseMove = (event: MouseEvent) => {
+      if (!boardLayoutRef.current) {
+        return;
+      }
+
+      const bounds = boardLayoutRef.current.getBoundingClientRect();
+      if (activeResizer === 'vertical') {
+        const nextPercent = ((event.clientX - bounds.left) / bounds.width) * 100;
+        setLeftPanelPercent(clamp(nextPercent, MIN_LEFT_PANEL_PERCENT, MAX_LEFT_PANEL_PERCENT));
+        return;
+      }
+
+      const maxBottom = Math.max(
+        MIN_BOTTOM_PANEL_HEIGHT,
+        bounds.height - MIN_TOP_PANEL_HEIGHT - (resizeModeEnabled ? RESIZER_THICKNESS : 0)
+      );
+      const nextBottom = bounds.bottom - event.clientY;
+      setBottomPanelHeight(clamp(nextBottom, MIN_BOTTOM_PANEL_HEIGHT, maxBottom));
+    };
+
+    const handleMouseUp = () => {
+      setActiveResizer(null);
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [activeResizer, resizeModeEnabled]);
 
   useEffect(() => {
     // If provider already exists for this game, reuse it
@@ -149,6 +235,15 @@ const BoardPage: React.FC<BoardPageProps> = ({ gameId, game, onBack }) => {
               <div className="shrink-0 inline-flex items-center gap-0.5 rounded-lg border border-slate-200 bg-slate-50 p-0.5">
                 <button
                   type="button"
+                  onClick={() => setResizeModeEnabled((current) => !current)}
+                  className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${
+                    resizeModeEnabled ? 'bg-emerald-600 text-white' : 'text-slate-600 hover:bg-white'
+                  }`}
+                >
+                  Resize Windows {resizeModeEnabled ? 'On' : 'Off'}
+                </button>
+                <button
+                  type="button"
                   onClick={() => boardViewRef.current?.toggleManageBoardsMode()}
                   className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${
                     boardToolbarState.manageBoardsMode
@@ -207,19 +302,57 @@ const BoardPage: React.FC<BoardPageProps> = ({ gameId, game, onBack }) => {
         )}
 
         {subpage === 'board' ? (
-          <div className="grid h-full min-h-0 grid-rows-[minmax(0,1fr)_260px] gap-2">
-            <div className="grid min-h-0 min-w-0 flex-1 grid-cols-[30%_70%] gap-2">
-              <div className="h-full min-h-0 overflow-hidden">
+          <div
+            ref={boardLayoutRef}
+            className="grid h-full min-h-0"
+            style={{
+              gridTemplateRows: `minmax(0, 1fr) ${resizeModeEnabled ? RESIZER_THICKNESS : 0}px ${bottomPanelHeight}px`,
+            }}
+          >
+            <div
+              className="grid min-h-0 min-w-0"
+              style={{
+                gridTemplateColumns: `${leftPanelPercent}% ${resizeModeEnabled ? RESIZER_THICKNESS : 0}px minmax(0, 1fr)`,
+              }}
+            >
+              <div className="h-full min-h-0 overflow-hidden rounded-lg border border-slate-200 bg-white shadow">
                 <GamestatePanel docRef={docRef} />
               </div>
-              <div className="min-h-0 min-w-0 overflow-hidden rounded-lg bg-white p-2 shadow">
+              <div
+                role="separator"
+                aria-label="Resize side panels"
+                className={`h-full ${resizeModeEnabled ? 'cursor-col-resize bg-slate-200 hover:bg-slate-300' : ''}`}
+                onMouseDown={(event) => {
+                  if (!resizeModeEnabled) return;
+                  event.preventDefault();
+                  setActiveResizer('vertical');
+                }}
+              />
+              <div className="min-h-0 min-w-0 overflow-hidden rounded-lg border border-slate-200 bg-white p-2 shadow">
                 <BoardView ref={boardViewRef} docRef={docRef} onToolbarStateChange={setBoardToolbarState} />
               </div>
             </div>
 
+            <div
+              role="separator"
+              aria-label="Resize top and bottom panels"
+              className={`${resizeModeEnabled ? 'cursor-row-resize bg-slate-200 hover:bg-slate-300' : ''}`}
+              onMouseDown={(event) => {
+                if (!resizeModeEnabled) return;
+                event.preventDefault();
+                setActiveResizer('horizontal');
+              }}
+            />
+
             <div className="min-h-0 overflow-hidden rounded-lg border border-slate-200 bg-white shadow">
               <div className="h-full overflow-y-auto p-2">
-                <SpiritPanelPage docRef={docRef} mode="full" />
+                <SpiritPanelPage
+                  docRef={docRef}
+                  mode="full"
+                  onToggleSpiritPanelHeight={toggleSpiritPanelHeight}
+                  spiritPanelExpanded={savedBottomPanelHeight !== null}
+                  resizeModeEnabled={resizeModeEnabled}
+                />
               </div>
             </div>
           </div>

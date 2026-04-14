@@ -26,9 +26,9 @@ type FearCard = FearCardDefinition;
 type BlightCard = BlightCardDefinition;
 
 type InvaderTrackCards = {
-  ravage: InvaderCard | null;
-  build: InvaderCard | null;
-  explore: InvaderCard | null;
+  ravage: InvaderCard[];
+  build: InvaderCard[];
+  explore: InvaderCard[];
 };
 
 const FEAR_PER_PLAYER = 4;
@@ -122,13 +122,18 @@ const parseInvaderCardList = (value: unknown, fallback: InvaderCard[] = []): Inv
 
 const parseTrackCards = (value: unknown): InvaderTrackCards => {
   if (!value || typeof value !== 'object') {
-    return { ravage: null, build: null, explore: null };
+    return { ravage: [], build: [], explore: [] };
   }
-  const cards = value as Partial<InvaderTrackCards>;
+  const cards = value as Record<string, unknown>;
+  const parseSlot = (slot: unknown): InvaderCard[] => {
+    if (Array.isArray(slot)) return slot.filter(isInvaderCard);
+    if (isInvaderCard(slot)) return [slot]; // backwards compat with old single-card format
+    return [];
+  };
   return {
-    ravage: isInvaderCard(cards.ravage) ? cards.ravage : null,
-    build: isInvaderCard(cards.build) ? cards.build : null,
-    explore: isInvaderCard(cards.explore) ? cards.explore : null,
+    ravage: parseSlot(cards.ravage),
+    build: parseSlot(cards.build),
+    explore: parseSlot(cards.explore),
   };
 };
 
@@ -493,7 +498,7 @@ const initialSnapshot: GamestateSnapshot = {
   invaderDeckCards: [...DEFAULT_INVADER_DECK],
   invaderRemovedCards: [],
   invaderDiscardCards: [],
-  invaderTrackCards: { ravage: null, build: null, explore: null },
+  invaderTrackCards: { ravage: [], build: [], explore: [] },
   eventDeckCards: [...EVENT_CARDS],
   eventRemovedCards: [],
   eventDiscardCards: [],
@@ -553,10 +558,76 @@ const CounterRow = ({
   </div>
 );
 
+type DiscardDisplayCard = {
+  id: string;
+  name: string;
+  faceUrl: string;
+  subtitle?: string;
+};
+
+const DiscardPileSection = ({
+  title,
+  cards,
+  isShown,
+  onToggle,
+  emptyMessage,
+}: {
+  title: string;
+  cards: DiscardDisplayCard[];
+  isShown: boolean;
+  onToggle: () => void;
+  emptyMessage: string;
+}) => (
+  <div className="rounded border border-slate-200 bg-white px-3 py-2">
+    <div className="flex items-center justify-between gap-2">
+      <div>
+        <p className="text-sm font-medium text-slate-700">{title}</p>
+        <p className="text-xs text-slate-500">{cards.length} card(s)</p>
+      </div>
+      <button
+        type="button"
+        onClick={onToggle}
+        className="rounded border border-slate-300 bg-slate-50 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100"
+      >
+        {isShown ? 'Hide' : 'Show'}
+      </button>
+    </div>
+    {isShown && (
+      <div className="mt-3">
+        {cards.length === 0 ? (
+          <p className="text-xs text-slate-500">{emptyMessage}</p>
+        ) : (
+          <div className="grid grid-cols-2 gap-2">
+            {cards
+              .slice()
+              .reverse()
+              .map((card, index) => (
+                <div key={`${card.id}-${index}`} className="rounded border border-slate-200 px-2 py-2">
+                  <div className="flex justify-center">
+                    <img
+                      src={card.faceUrl}
+                      alt={card.name}
+                      className="rounded border border-slate-300 object-cover"
+                      style={{ width: 140, height: 200, minWidth: 140 }}
+                    />
+                  </div>
+                  <p className="mt-1 truncate text-center text-[11px] font-semibold text-slate-900">{card.name}</p>
+                  {card.subtitle ? <p className="text-center text-[10px] text-slate-500">{card.subtitle}</p> : null}
+                </div>
+              ))}
+          </div>
+        )}
+      </div>
+    )}
+  </div>
+);
+
 const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef }) => {
   const [snapshot, setSnapshot] = useState<GamestateSnapshot>(initialSnapshot);
   const [showInvaderDiscard, setShowInvaderDiscard] = useState(false);
   const [showEventDiscard, setShowEventDiscard] = useState(false);
+  const [showFearDiscard, setShowFearDiscard] = useState(false);
+  const [showBlightDiscard, setShowBlightDiscard] = useState(false);
 
   useEffect(() => {
     let disposed = false;
@@ -669,7 +740,7 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef }) => {
       const spiritCount = clampMin(getSafeNumber(gameMap.get('spiritCount'), getSafeNumber(gameMap.get('playerCount'), 1)), 1);
       const threshold = FEAR_PER_PLAYER * spiritCount;
 
-      let fearPool = clampMin(getSafeNumber(gameMap.get('fearPool'), 0) + delta, 0);
+      let fearPool = getSafeNumber(gameMap.get('fearPool'), 0);
       let fearCardsEarned = clampMin(getSafeNumber(gameMap.get('fearCardsEarned'), 0), 0);
 
       const gameConfig = gameMap.get('gameConfig') as Y.Map<unknown> | undefined;
@@ -684,13 +755,26 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef }) => {
       let fearDeck = parseDeckCardList<FearCard>(gameMap.get('fearDeckCards'));
       let fearEarned = parseDeckCardList<FearCard>(gameMap.get('fearEarnedCards'));
 
-      while (fearPool >= threshold) {
-        fearPool -= threshold;
-        fearCardsEarned += 1;
-        const [earnedCard, ...remainingFearDeck] = fearDeck;
-        if (earnedCard) {
-          fearEarned = [...fearEarned, earnedCard];
-          fearDeck = remainingFearDeck;
+      // Handle mini undo: if trying to go below 0, move last earned card back to deck instead
+      if (delta < 0 && fearPool === 0 && fearEarned.length > 0) {
+        const lastEarnedCard = fearEarned[fearEarned.length - 1];
+        if (lastEarnedCard) {
+          fearEarned = fearEarned.slice(0, -1);
+          fearDeck = [lastEarnedCard, ...fearDeck];
+          fearPool = threshold - 1;
+          fearCardsEarned = clampMin(fearCardsEarned - 1, 0);
+        }
+      } else {
+        fearPool = clampMin(fearPool + delta, 0);
+
+        while (fearPool >= threshold) {
+          fearPool -= threshold;
+          fearCardsEarned += 1;
+          const [earnedCard, ...remainingFearDeck] = fearDeck;
+          if (earnedCard) {
+            fearEarned = [...fearEarned, earnedCard];
+            fearDeck = remainingFearDeck;
+          }
         }
       }
 
@@ -839,15 +923,12 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef }) => {
       exploredLands.forEach((land) => newBuildLands.push([land]));
       buildLands.forEach((land) => newRavageLands.push([land]));
 
-      const nextInvaderDiscardCards = trackCards.ravage
-        ? [...invaderDiscardCards, trackCards.ravage]
-        : invaderDiscardCards;
-      gameMap.set('invaderDiscardCards', nextInvaderDiscardCards);
+      gameMap.set('invaderDiscardCards', [...invaderDiscardCards, ...trackCards.ravage]);
 
       gameMap.set('invaderTrackCards', {
         ravage: trackCards.build,
         build: trackCards.explore,
-        explore: null,
+        explore: [],
       });
 
       syncDeckAndDiscardCounts(gameMap);
@@ -873,7 +954,7 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef }) => {
       gameMap.set('invaderTrackCards', {
         ravage: trackCards.ravage,
         build: trackCards.build,
-        explore: drawnCard,
+        explore: [...trackCards.explore, drawnCard],
       });
 
       syncDeckAndDiscardCounts(gameMap);
@@ -1002,32 +1083,35 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef }) => {
             </div>
             <p className="mt-2 text-center text-sm font-semibold text-slate-900">{snapshot.currentEventCard.name}</p>
           </div>
-        ) : (
-          <p className="text-xs text-slate-500">No event card currently revealed.</p>
-        )}
+        ) : null}
       </section>
 
       <section className="space-y-3 rounded-lg border border-rose-200 bg-rose-50 p-3">
         <div className="grid grid-cols-2 gap-3">
-          <StatPill label="Fear Pool" value={snapshot.fearPool} />
           <StatPill label="Next Fear Card" value={`${snapshot.fearPool}/${snapshot.fearThreshold}`} />
-        </div>
-        <div className="grid grid-cols-2 gap-3">
           <StatPill label="Earned Fear Pile" value={snapshot.fearEarnedCards.length} />
-          <StatPill label="Current Fear Card" value={snapshot.currentFearCard ? 1 : 0} />
         </div>
-        <CounterRow
-          label="Add Fear"
-          value={snapshot.fearPool}
-          onDecrement={() => adjustFearPool(-1)}
-          onIncrement={() => adjustFearPool(1)}
-        />
-        <CounterRow
-          label="Fear Cards Earned"
-          value={snapshot.fearCardsEarned}
-          onDecrement={() => adjustFearCardsEarned(-1)}
-          onIncrement={() => adjustFearCardsEarned(1)}
-        />
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => adjustFearPool(-1)}
+            disabled={snapshot.fearPool === 0 && snapshot.fearEarnedCards.length === 0}
+            className={`flex-1 rounded border px-3 py-2 text-sm font-medium ${
+              snapshot.fearPool === 0 && snapshot.fearEarnedCards.length === 0
+                ? 'cursor-not-allowed border-rose-200 bg-rose-100 text-rose-400'
+                : 'border-rose-300 bg-white text-rose-700 hover:bg-rose-100'
+            }`}
+          >
+            − Fear
+          </button>
+          <button
+            type="button"
+            onClick={() => adjustFearPool(1)}
+            className="flex-1 rounded border border-rose-300 bg-white px-3 py-2 text-sm font-medium text-rose-700 hover:bg-rose-100"
+          >
+            + Fear
+          </button>
+        </div>
         <div className="flex gap-2">
           <button
             type="button"
@@ -1078,8 +1162,8 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef }) => {
             { key: 'build', label: 'Build', bgClass: 'bg-orange-50', textClass: 'text-orange-800' },
             { key: 'explore', label: 'Explore', bgClass: 'bg-amber-50', textClass: 'text-amber-800' },
           ] as const).map(({ key, label, bgClass, textClass }) => {
-            const activeCard = snapshot.invaderTrackCards[key];
-            const previewCard = key === 'explore' && !activeCard ? snapshot.invaderDeckCards[0] ?? null : null;
+            const slotCards = snapshot.invaderTrackCards[key];
+            const previewCard = key === 'explore' && slotCards.length === 0 ? snapshot.invaderDeckCards[0] ?? null : null;
             const lands =
               key === 'ravage'
                 ? snapshot.invaderLands.ravageLands
@@ -1087,37 +1171,51 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef }) => {
                 ? snapshot.invaderLands.buildLands
                 : snapshot.invaderLands.exploredLands;
 
+            const CARD_W = 140;
+            const CARD_H = 200;
+            const SPLAY_OFFSET = CARD_W / 2;
+            const containerWidth =
+              slotCards.length <= 1 ? CARD_W : SPLAY_OFFSET * (slotCards.length - 1) + CARD_W;
+
             return (
               <div key={key} className={`rounded border p-2 ${bgClass}`}>
                 <p className={`text-center text-xs font-semibold ${textClass}`}>{label}</p>
-                <div className="mt-2 flex justify-center">
-                  {activeCard ? (
-                    <img
-                      src={activeCard.faceUrl}
-                      alt={activeCard.name}
-                      className="rounded border border-slate-300 object-cover shadow-sm"
-                      style={{ width: 140, height: 200, minWidth: 140 }}
-                    />
-                  ) : previewCard ? (
-                    <img
-                      src={previewCard.backUrl}
-                      alt={`${previewCard.name} back`}
-                      className="rounded border border-slate-300 object-cover shadow-sm"
-                      style={{ width: 140, height: 200, minWidth: 140 }}
-                    />
-                  ) : (
-                    <div
-                      className="flex items-center justify-center rounded border border-dashed border-slate-300 bg-white text-[8px] text-slate-400"
-                      style={{ width: 140, height: 200, minWidth: 140 }}
-                    >
-                      Empty
-                    </div>
-                  )}
+                <div className="mt-2 flex justify-center overflow-visible">
+                  <div style={{ position: 'relative', width: containerWidth, height: CARD_H, flexShrink: 0 }}>
+                    {slotCards.length > 0 ? (
+                      slotCards.map((card, i) => (
+                        <img
+                          key={i}
+                          src={card.faceUrl}
+                          alt={card.name}
+                          className="rounded border border-slate-300 object-cover shadow-sm"
+                          style={{
+                            position: 'absolute',
+                            left: i * SPLAY_OFFSET,
+                            top: 0,
+                            width: CARD_W,
+                            height: CARD_H,
+                            zIndex: i,
+                          }}
+                        />
+                      ))
+                    ) : previewCard ? (
+                      <img
+                        src={previewCard.backUrl}
+                        alt={`${previewCard.name} back`}
+                        className="rounded border border-slate-300 object-cover shadow-sm"
+                        style={{ position: 'absolute', left: 0, top: 0, width: CARD_W, height: CARD_H }}
+                      />
+                    ) : (
+                      <div
+                        className="flex items-center justify-center rounded border border-dashed border-slate-300 bg-white text-[8px] text-slate-400"
+                        style={{ position: 'absolute', left: 0, top: 0, width: CARD_W, height: CARD_H }}
+                      >
+                        Empty
+                      </div>
+                    )}
+                  </div>
                 </div>
-                <p className="mt-2 text-center text-[11px] font-medium text-slate-700">
-                  {activeCard ? activeCard.name : previewCard ? 'Face-down deck top' : 'No card'}
-                </p>
-                <p className="mt-1 text-center text-[11px] text-slate-500">{lands.join(', ') || '—'}</p>
               </div>
             );
           })}
@@ -1141,34 +1239,46 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef }) => {
       </section>
 
       <section className="space-y-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-emerald-700">Blight Card</h2>
-        <div className="rounded border border-emerald-200 bg-white px-3 py-2">
-          <p className="text-xs font-medium uppercase tracking-wide text-emerald-700">Card</p>
-          <p className="text-sm font-semibold text-slate-900">{snapshot.currentBlightCard?.name || snapshot.blightCard}</p>
-          {snapshot.currentBlightCard ? (
-            <>
-              <p className="text-xs text-slate-500">
-                Blight per player: {snapshot.currentBlightCard.blightPerPlayer} | {snapshot.currentBlightCard.healthy ? 'Still Healthy' : 'Not Healthy'}
-              </p>
-              <div className="mt-2 flex justify-center">
-                <img
-                  src={snapshot.currentBlightCard.faceUrl}
-                  alt={snapshot.currentBlightCard.name}
-                  className="rounded border border-slate-300 object-cover"
-                  style={{ width: 140, height: 200, minWidth: 140 }}
-                />
-              </div>
-            </>
-          ) : (
-            <p className="text-xs text-slate-500">Blight card not flipped yet.</p>
-          )}
+        <div className="relative flex justify-center">
+          <img
+            src={snapshot.currentBlightCard?.faceUrl ?? BLIGHT_CARDS[0]?.backUrl}
+            alt={snapshot.currentBlightCard?.name ?? 'Blight card'}
+            className="rounded border border-slate-300 object-cover"
+            style={{ width: 140, height: 200, minWidth: 140 }}
+          />
+          <div className="absolute inset-0 flex items-start justify-center pt-[50px]">
+            <div
+              draggable
+              onDragStart={(e) => {
+                e.dataTransfer.effectAllowed = 'copy';
+                e.dataTransfer.setData('piece-type', 'blight-from-card');
+              }}
+              title="Drag onto the board to add blight from counter"
+              className="flex cursor-grab flex-col items-center active:cursor-grabbing"
+            >
+              <img src="/Blight.png" alt="Blight" style={{ width: 52, height: 52, pointerEvents: 'none' }} />
+              <span className="mt-1 min-w-9 rounded-full border border-slate-900 bg-amber-100 px-2 py-0.5 text-center text-sm font-extrabold leading-none text-slate-900 shadow-sm">
+                {snapshot.blightCount}
+              </span>
+            </div>
+          </div>
         </div>
-        <CounterRow
-          label="Blight Counter"
-          value={snapshot.blightCount}
-          onDecrement={() => adjustBlightCount(-1)}
-          onIncrement={() => adjustBlightCount(1)}
-        />
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => adjustBlightCount(-1)}
+            className="flex-1 rounded border border-emerald-300 bg-white px-3 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-100"
+          >
+            − Blight
+          </button>
+          <button
+            type="button"
+            onClick={() => adjustBlightCount(1)}
+            className="flex-1 rounded border border-emerald-300 bg-white px-3 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-100"
+          >
+            + Blight
+          </button>
+        </div>
         {snapshot.blightCount === 0 && !snapshot.blightLoss ? (
           <button
             type="button"
@@ -1183,9 +1293,6 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef }) => {
             <p className="text-sm font-semibold text-red-700">Blight Loss: the blight card has run out and cannot be flipped again.</p>
           </div>
         ) : null}
-        <p className="text-xs text-slate-500">
-          Base pool uses 2 blight per spirit + 1. Current setup tracks {snapshot.spiritCount} spirit(s).
-        </p>
       </section>
 
       <section className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
@@ -1197,93 +1304,55 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef }) => {
 
       <section className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-700">Discard Piles</h2>
-        <div className="rounded border border-slate-200 bg-white px-3 py-2">
-          <div className="flex items-center justify-between gap-2">
-            <div>
-              <p className="text-sm font-medium text-slate-700">Invader Discard</p>
-              <p className="text-xs text-slate-500">{snapshot.invaderDiscardCards.length} card(s)</p>
-            </div>
-            <button
-              type="button"
-              onClick={() => setShowInvaderDiscard((current) => !current)}
-              className="rounded border border-slate-300 bg-slate-50 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100"
-            >
-              {showInvaderDiscard ? 'Hide' : 'Show'}
-            </button>
-          </div>
-          {showInvaderDiscard && (
-            <div className="mt-3">
-              {snapshot.invaderDiscardCards.length === 0 ? (
-                <p className="text-xs text-slate-500">No invader cards discarded yet.</p>
-              ) : (
-                <div className="grid grid-cols-2 gap-2">
-                  {snapshot.invaderDiscardCards
-                    .slice()
-                    .reverse()
-                    .map((card, index) => (
-                      <div key={`${card.id}-${index}`} className="rounded border border-slate-200 px-2 py-2">
-                        <div className="flex justify-center">
-                          <img
-                            src={card.faceUrl}
-                            alt={card.name}
-                            className="rounded border border-slate-300 object-cover"
-                            style={{ width: 140, height: 200, minWidth: 140 }}
-                          />
-                        </div>
-                        <p className="mt-1 truncate text-center text-[11px] font-semibold text-slate-900">{card.name}</p>
-                        <p className="text-center text-[10px] text-slate-500">Stage {card.stage}</p>
-                      </div>
-                    ))}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
+        <DiscardPileSection
+          title="Invader Discard"
+          cards={snapshot.invaderDiscardCards.map((card) => ({
+            id: card.id,
+            name: card.name,
+            faceUrl: card.faceUrl,
+            subtitle: `Stage ${card.stage}`,
+          }))}
+          isShown={showInvaderDiscard}
+          onToggle={() => setShowInvaderDiscard((current) => !current)}
+          emptyMessage="No invader cards discarded yet."
+        />
 
-        <div className="rounded border border-slate-200 bg-white px-3 py-2">
-          <div className="flex items-center justify-between gap-2">
-            <div>
-              <p className="text-sm font-medium text-slate-700">Event Discard</p>
-              <p className="text-xs text-slate-500">{snapshot.eventDiscardCards.length} card(s)</p>
-            </div>
-            <button
-              type="button"
-              onClick={() => setShowEventDiscard((current) => !current)}
-              className="rounded border border-slate-300 bg-slate-50 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100"
-            >
-              {showEventDiscard ? 'Hide' : 'Show'}
-            </button>
-          </div>
-          {showEventDiscard && (
-            <div className="mt-3">
-              {snapshot.eventDiscardCards.length === 0 ? (
-                <p className="text-xs text-slate-500">No event cards discarded yet.</p>
-              ) : (
-                <div className="grid grid-cols-2 gap-2">
-                  {snapshot.eventDiscardCards
-                    .slice()
-                    .reverse()
-                    .map((card, index) => (
-                      <div key={`${card.id}-${index}`} className="rounded border border-slate-200 px-2 py-2">
-                        <div className="flex justify-center">
-                          <img
-                            src={card.faceUrl}
-                            alt={card.name || 'Event card'}
-                            className="rounded border border-slate-300 object-cover"
-                            style={{ width: 140, height: 200, minWidth: 140 }}
-                          />
-                        </div>
-                        <p className="mt-1 truncate text-center text-[11px] font-semibold text-slate-900">{card.name}</p>
-                      </div>
-                    ))}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
+        <DiscardPileSection
+          title="Event Discard"
+          cards={snapshot.eventDiscardCards.map((card) => ({
+            id: card.id,
+            name: card.name,
+            faceUrl: card.faceUrl,
+          }))}
+          isShown={showEventDiscard}
+          onToggle={() => setShowEventDiscard((current) => !current)}
+          emptyMessage="No event cards discarded yet."
+        />
 
-        <StatPill label="Fear Discard" value={snapshot.discards.fear} />
-        <StatPill label="Blight Discard" value={snapshot.discards.blight} />
+        <DiscardPileSection
+          title="Fear Discard"
+          cards={snapshot.fearDiscardCards.map((card) => ({
+            id: card.id,
+            name: card.name,
+            faceUrl: card.faceUrl,
+          }))}
+          isShown={showFearDiscard}
+          onToggle={() => setShowFearDiscard((current) => !current)}
+          emptyMessage="No fear cards discarded yet."
+        />
+
+        <DiscardPileSection
+          title="Blight Discard"
+          cards={snapshot.blightDiscardCards.map((card) => ({
+            id: card.id,
+            name: card.name,
+            faceUrl: card.faceUrl,
+            subtitle: card.healthy ? 'Healthy Island' : 'Blighted Island',
+          }))}
+          isShown={showBlightDiscard}
+          onToggle={() => setShowBlightDiscard((current) => !current)}
+          emptyMessage="No blight cards discarded yet."
+        />
       </section>
     </aside>
   );
