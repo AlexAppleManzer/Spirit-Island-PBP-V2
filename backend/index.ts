@@ -11,7 +11,8 @@ import * as syncProtocol from 'y-protocols/sync';
 import * as awarenessProtocol from 'y-protocols/awareness';
 import * as encoding from 'lib0/encoding';
 import * as decoding from 'lib0/decoding';
-import { getAdversary } from './data/adversaries.js';
+import { getAdversary, getAdversaryLevel, listAdversaries } from './data/adversaries.js';
+import { createInvaderSetupDeckForAdversary } from './data/invaderCards.js';
 import { calculateTerrorLevel, applyFearModifier, initializeFearState } from './utils/fearUtils.js';
 import { executeEvent } from './utils/eventUtils.js';
 import { createFearDeck, createInvaderDeck, getRandomLand } from './utils/deckUtils.js';
@@ -38,6 +39,8 @@ type GameDto = {
   turn: number;
   discordWebhookUrl: string | null;
   createdAt: string;
+  adversaryId: string;
+  adversaryLevel: number;
 };
 
 // Config
@@ -50,6 +53,8 @@ const pool = new Pool({ connectionString: DATABASE_URL });
 
 const ensureDatabaseSchema = async () => {
   await pool.query('ALTER TABLE games ADD COLUMN IF NOT EXISTS name VARCHAR(120)');
+  await pool.query("ALTER TABLE games ADD COLUMN IF NOT EXISTS adversary_id VARCHAR(80) DEFAULT 'none'");
+  await pool.query('ALTER TABLE games ADD COLUMN IF NOT EXISTS adversary_level SMALLINT DEFAULT 0');
 };
 
 // Express setup
@@ -121,7 +126,7 @@ const ensureNestedMap = (parent: Y.Map<unknown>, key: string) => {
   return created;
 };
 
-const ensureGameDefaults = (gameMap: Y.Map<unknown>, spiritCountFallback: number, adversaryId?: string) => {
+const ensureGameDefaults = (gameMap: Y.Map<unknown>, spiritCountFallback: number, adversaryId?: string, adversaryLevel?: number) => {
   const legacyRound = getSafeNumber(gameMap.get('round'), 1);
   const turn = getSafeNumber(gameMap.get('turn'), legacyRound);
   gameMap.set('turn', clampMin(turn, 1));
@@ -133,16 +138,33 @@ const ensureGameDefaults = (gameMap: Y.Map<unknown>, spiritCountFallback: number
       : 'growth';
   gameMap.set('currentPhase', normalizedPhase);
 
-  if (!gameMap.has('boards')) {
-    gameMap.set('boards', new Y.Map());
-  }
-
   const safeSpiritFallback = clampMin(spiritCountFallback, 0);
   const spiritCount = clampMin(
     getSafeNumber(gameMap.get('spiritCount'), getSafeNumber(gameMap.get('playerCount'), safeSpiritFallback)),
     0
   );
   gameMap.set('spiritCount', spiritCount);
+
+  if (!gameMap.has('boards')) {
+    const boards = new Y.Map<unknown>();
+    // Pre-create one empty board per player so they exist before spirits are assigned.
+    for (let i = 0; i < spiritCount; i += 1) {
+      const boardId = BOARD_LETTERS[i] ?? `P${i + 1}`;
+      const board = new Y.Map<unknown>();
+      board.set('boardId', boardId);
+      board.set('playerId', i + 1);
+      board.set('x', 120 + (i % 3) * 220);
+      board.set('y', 100 + Math.floor(i / 3) * 170);
+      board.set('rotation', 0);
+      const lands = new Y.Map<unknown>();
+      for (let j = 1; j <= 8; j += 1) {
+        lands.set(String(j), new Y.Array());
+      }
+      board.set('lands', lands);
+      boards.set(boardId, board);
+    }
+    gameMap.set('boards', boards);
+  }
   gameMap.set('playerCount', spiritCount);
   gameMap.set('fearThreshold', FEAR_PER_PLAYER * spiritCount);
 
@@ -153,23 +175,43 @@ const ensureGameDefaults = (gameMap: Y.Map<unknown>, spiritCountFallback: number
     gameMap.set('gameConfig', gameConfig);
   }
 
-  // Set adversary if provided, or use existing, or default to Brandenburg-Prussia
-  let adversary = null;
-  let selectedAdversaryId = adversaryId || (gameConfig as Y.Map<unknown>).get('adversary') as string || 'brandenburg-prussia';
-  adversary = getAdversary(selectedAdversaryId);
-  
-  if (!adversary) {
-    adversary = getAdversary('brandenburg-prussia')!;
-    selectedAdversaryId = 'brandenburg-prussia';
+  // Resolve adversary id — provided arg wins, then existing gameConfig, then 'none'
+  const selectedAdversaryId =
+    adversaryId ??
+    ((gameConfig as Y.Map<unknown>).get('adversary') as string | undefined) ??
+    'none';
+
+  // Resolve adversary level — provided arg wins, then existing gameConfig, then 0
+  const rawStoredLevel = (gameConfig as Y.Map<unknown>).get('adversaryLevel');
+  const selectedAdversaryLevel =
+    adversaryLevel ??
+    (typeof rawStoredLevel === 'number' ? rawStoredLevel : 0);
+
+  // Look up per-level data; fall back to 'none' level 0 if anything is missing
+  let levelData = getAdversaryLevel(selectedAdversaryId, selectedAdversaryLevel);
+  if (!levelData) {
+    levelData = getAdversaryLevel('none', 0)!;
   }
 
   (gameConfig as Y.Map<unknown>).set('adversary', selectedAdversaryId);
-  (gameConfig as Y.Map<unknown>).set('fearThresholds', [...adversary.fearThresholds]);
-  (gameConfig as Y.Map<unknown>).set('initialInvaderCardCount', adversary.initialInvaderCardCount);
+  (gameConfig as Y.Map<unknown>).set('adversaryLevel', selectedAdversaryLevel);
+  (gameConfig as Y.Map<unknown>).set('fearThresholds', [...levelData.fearThresholds]);
+  (gameConfig as Y.Map<unknown>).set('initialInvaderCardCount', levelData.invaderDeckOrder.length);
+  (gameConfig as Y.Map<unknown>).set('invaderDeckOrder', levelData.invaderDeckOrder);
 
-  // Initialize fear state based on adversary thresholds
+  // Initialize invader deck from adversary order — only when adversary is explicitly provided
+  // (i.e. at game creation). getGameDoc calls ensureGameDefaults without adversary args before
+  // loading saved state, so we must not pre-empt the adversary-aware call that follows.
+  if (!Array.isArray(gameMap.get('invaderDeckCards')) && adversaryId !== undefined) {
+    const { deck, removed } = createInvaderSetupDeckForAdversary(levelData.invaderDeckOrder);
+    gameMap.set('invaderDeckCards', deck);
+    gameMap.set('invaderRemovedCards', removed);
+    gameMap.set('invaderDiscardCards', []);
+  }
+
+  // Initialize fear state based on adversary level thresholds
   const fearCardsEarned = clampMin(getSafeNumber(gameMap.get('fearCardsEarned'), 0), 0);
-  const terrorLevel = calculateTerrorLevel(fearCardsEarned, adversary.fearThresholds);
+  const terrorLevel = calculateTerrorLevel(fearCardsEarned, levelData.fearThresholds);
   gameMap.set('fearCardsEarned', fearCardsEarned);
   gameMap.set('terrorLevel', terrorLevel);
   gameMap.set('fearPool', clampMin(getSafeNumber(gameMap.get('fearPool'), 0), 0));
@@ -205,8 +247,8 @@ const ensureGameDefaults = (gameMap: Y.Map<unknown>, spiritCountFallback: number
   invaderTrack.set('ravage', ravageLands.length);
 
   const decks = ensureNestedMap(gameMap, 'decks');
-  decks.set('invader', clampMin(getSafeNumber(decks.get('invader'), adversary.initialInvaderCardCount), 0));
-  decks.set('fear', adversary.fearThresholds[adversary.fearThresholds.length - 1] || 9);
+  decks.set('invader', clampMin(getSafeNumber(decks.get('invader'), levelData.invaderDeckOrder.length), 0));
+  decks.set('fear', levelData.fearThresholds[levelData.fearThresholds.length - 1] || 9);
   decks.set('event', clampMin(getSafeNumber(decks.get('event'), 0), 0));
 
   const discards = ensureNestedMap(gameMap, 'discards');
@@ -284,6 +326,8 @@ const mapGameRowToDto = (row: Record<string, any>): GameDto => {
     turn: toInt(row.round) ?? 1,
     discordWebhookUrl: typeof row.discord_webhook_url === 'string' ? row.discord_webhook_url : null,
     createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
+    adversaryId: typeof row.adversary_id === 'string' ? row.adversary_id : 'none',
+    adversaryLevel: toInt(row.adversary_level) ?? 0,
   };
 };
 
@@ -737,7 +781,7 @@ app.get('/api/games', verifyToken, async (req: Request, res: Response) => {
 // Create a new game
 app.post('/api/games', verifyToken, async (req: Request, res: Response) => {
   try {
-    const { name, discordWebhookUrl, adversaryId } = req.body;
+    const { name, discordWebhookUrl, adversaryId, adversaryLevel, spiritCount } = req.body;
     const userId = (req as any).user.id;
 
     if (!name || !name.trim()) {
@@ -749,16 +793,24 @@ app.post('/api/games', verifyToken, async (req: Request, res: Response) => {
         ? discordWebhookUrl.trim()
         : null;
 
+    // Validate and normalize adversary selection
+    const selectedAdversaryId =
+      typeof adversaryId === 'string' && getAdversary(adversaryId) ? adversaryId : 'none';
+    const rawLevel = typeof adversaryLevel === 'number' ? adversaryLevel : 0;
+    const selectedAdversaryLevel = Math.min(6, Math.max(0, Math.floor(rawLevel)));
+
+    // Validate and normalize spirit count (1–6, default 1)
+    const rawSpiritCount = typeof spiritCount === 'number' ? spiritCount : 1;
+    const selectedSpiritCount = Math.min(6, Math.max(1, Math.floor(rawSpiritCount)));
+
     const result = await pool.query(
-      'INSERT INTO games (owner_id, name, player_ids, discord_webhook_url) VALUES ($1, $2, ARRAY[$1::integer], $3) RETURNING *',
-      [userId, name.trim(), normalizedWebhook]
+      'INSERT INTO games (owner_id, name, player_ids, discord_webhook_url, adversary_id, adversary_level) VALUES ($1, $2, ARRAY[$1::integer], $3, $4, $5) RETURNING *',
+      [userId, name.trim(), normalizedWebhook, selectedAdversaryId, selectedAdversaryLevel]
     );
 
     const createdGame = result.rows[0];
     const ydoc = await getGameDoc(String(createdGame.id));
-    // Pass adversaryId if provided
-    const selectedAdversaryId = typeof adversaryId === 'string' ? adversaryId : undefined;
-    ensureGameDefaults(ydoc.getMap('game'), 0, selectedAdversaryId);
+    ensureGameDefaults(ydoc.getMap('game'), selectedSpiritCount, selectedAdversaryId, selectedAdversaryLevel);
 
     res.status(201).json(mapGameRowToDto(createdGame));
   } catch (err: any) {
@@ -835,7 +887,9 @@ app.post('/api/games/:id/join', verifyToken, async (req: Request, res: Response)
       });
     }
 
-    if (!boardIdForUser) {
+    // Only auto-create a board on join if the game has no boards at all.
+    // Games created with a player count pre-have their boards from ensureGameDefaults.
+    if (!boardIdForUser && existingBoardIds.length === 0) {
       const nextBoardId = getNextBoardId(existingBoardIds);
       initializePlayerBoard(ydoc, userId, nextBoardId);
       boardIdForUser = nextBoardId;
@@ -913,21 +967,9 @@ app.post('/api/games/:id/leave', verifyToken, async (req: Request, res: Response
   }
 });
 
-// Get list of adversaries
-app.get('/api/adversaries', (req: Request, res: Response) => {
-  try {
-    const { ADVERSARIES } = require('./data/adversaries');
-    const adversaries = Object.values(ADVERSARIES).map((adv: any) => ({
-      id: adv.id,
-      name: adv.name,
-      difficulty: adv.difficulty,
-      description: adv.description,
-      fearThresholds: adv.fearThresholds,
-    }));
-    res.json(adversaries);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
+// Get list of adversaries (full per-level data for the create-game screen)
+app.get('/api/adversaries', (_req: Request, res: Response) => {
+  res.json(listAdversaries());
 });
 
 // Get persistent spirit presence layouts (outside game instances)

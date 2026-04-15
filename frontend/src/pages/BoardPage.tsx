@@ -41,6 +41,7 @@ const BoardPage: React.FC<BoardPageProps> = ({ gameId, game, onBack }) => {
   const [bottomPanelHeight, setBottomPanelHeight] = useState(260);
   const [savedBottomPanelHeight, setSavedBottomPanelHeight] = useState<number | null>(null);
   const [activeResizer, setActiveResizer] = useState<'vertical' | 'horizontal' | null>(null);
+  const [selectedSpiritBoardId, setSelectedSpiritBoardId] = useState<string | null>(null);
   const docRef = useRef<Y.Doc | null>(null);
   const providerRef = useRef<WebsocketProvider | null>(null);
   const boardViewRef = useRef<BoardViewHandle | null>(null);
@@ -316,7 +317,7 @@ const BoardPage: React.FC<BoardPageProps> = ({ gameId, game, onBack }) => {
               }}
             >
               <div className="h-full min-h-0 overflow-hidden rounded-lg border border-slate-200 bg-white shadow">
-                <GamestatePanel docRef={docRef} />
+                <GamestatePanel docRef={docRef} selectedBoardId={selectedSpiritBoardId} />
               </div>
               <div
                 role="separator"
@@ -352,6 +353,7 @@ const BoardPage: React.FC<BoardPageProps> = ({ gameId, game, onBack }) => {
                   onToggleSpiritPanelHeight={toggleSpiritPanelHeight}
                   spiritPanelExpanded={savedBottomPanelHeight !== null}
                   resizeModeEnabled={resizeModeEnabled}
+                  onSelectedBoardChange={setSelectedSpiritBoardId}
                 />
               </div>
             </div>

@@ -67,6 +67,7 @@ type SpiritPanelPageProps = {
   onToggleSpiritPanelHeight?: () => void;
   spiritPanelExpanded?: boolean;
   resizeModeEnabled?: boolean;
+  onSelectedBoardChange?: (boardId: string | null) => void;
 };
 
 const getSafeNumber = (value: unknown, fallback: number) => {
@@ -81,8 +82,6 @@ const clampMin = (value: number, min: number) => {
 };
 
 const DEFAULT_COLORS = ['#facc15', '#38bdf8', '#34d399', '#f97316', '#a78bfa', '#f43f5e'];
-const MAX_SPIRITS = 6;
-const BOARD_LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
 
 const POWER_CARD_COSTS = new Map<string, number>([
   ...MAJOR_POWER_CARDS.map((card) => [card.id, card.cost] as const),
@@ -153,16 +152,6 @@ const FORGETTABLE_POWER_CARD_BY_ID = new Map<string, ForgottenPowerCard>([
 const MINOR_POWER_CARD_BY_ID = new Map(MINOR_POWER_CARDS.map((card) => [card.id, card] as const));
 const MAJOR_POWER_CARD_BY_ID = new Map(MAJOR_POWER_CARDS.map((card) => [card.id, card] as const));
 
-const getNextBoardId = (existingBoardIds: string[]) => {
-  for (let i = 0; i < BOARD_LETTERS.length; i += 1) {
-    const candidate = BOARD_LETTERS[i] ?? `P${i + 1}`;
-    if (!existingBoardIds.includes(candidate)) {
-      return candidate;
-    }
-  }
-
-  return `P${existingBoardIds.length + 1}`;
-};
 
 const parseForgottenPowerCardList = (value: unknown): ForgottenPowerCard[] => {
   if (!Array.isArray(value)) {
@@ -191,11 +180,19 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
   onToggleSpiritPanelHeight,
   spiritPanelExpanded = false,
   resizeModeEnabled = false,
+  onSelectedBoardChange,
 }) => {
   const [spiritStates, setSpiritStates] = useState<SpiritState[]>([]);
+  const [emptyBoardIds, setEmptyBoardIds] = useState<string[]>([]);
   const [selectedBoardId, setSelectedBoardId] = useState<string | null>(null);
+
+  const selectBoard = (boardId: string | null) => {
+    setSelectedBoardId(boardId);
+    onSelectedBoardChange?.(boardId);
+  };
   const [isAddingSpirit, setIsAddingSpirit] = useState(false);
   const [spiritToAddId, setSpiritToAddId] = useState(SPIRITS[0]?.id ?? '');
+  const [targetBoardId, setTargetBoardId] = useState<string | null>(null);
   const [layoutsBySpirit, setLayoutsBySpirit] = useState<Record<string, SpiritLayout>>({});
   const [panelAspectRatios, setPanelAspectRatios] = useState<Record<string, number>>({});
   const lastTurnKeyRef = useRef<string | null>(null);
@@ -264,6 +261,7 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
       }
 
       const nextStates: SpiritState[] = [];
+      const nextEmptyBoardIds: string[] = [];
       let index = 0;
 
       boards.forEach((boardData, boardId) => {
@@ -271,18 +269,22 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
           return;
         }
 
-        let spiritState = boardData.get('spiritState') as Y.Map<unknown> | undefined;
+        // Boards without a spiritId are "empty" — available for spirit assignment.
+        // Do NOT auto-assign a fallback spirit; just track the board as empty.
+        const spiritStateRaw = boardData.get('spiritState');
+        const spiritIdRaw = spiritStateRaw instanceof Y.Map ? spiritStateRaw.get('spiritId') : undefined;
+        const spiritId = typeof spiritIdRaw === 'string' && spiritIdRaw.length > 0 ? spiritIdRaw : null;
+
+        if (!spiritId) {
+          nextEmptyBoardIds.push(boardId);
+          return;
+        }
+
+        // Board has an assigned spirit — ensure spiritState Y.Map exists.
+        let spiritState = spiritStateRaw as Y.Map<unknown>;
         if (!(spiritState instanceof Y.Map)) {
           spiritState = new Y.Map<unknown>();
           boardData.set('spiritState', spiritState);
-        }
-
-        const fallbackSpiritId = SPIRITS[index]?.id ?? SPIRITS[0]?.id ?? '';
-        const spiritIdRaw = spiritState.get('spiritId');
-        const spiritId = typeof spiritIdRaw === 'string' && spiritIdRaw.length > 0 ? spiritIdRaw : fallbackSpiritId;
-
-        if (spiritId && spiritIdRaw !== spiritId) {
-          spiritState.set('spiritId', spiritId);
         }
 
         const energy = getSafeNumber(spiritState.get('energy'), 0);
@@ -393,7 +395,7 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
         nextStates.push({
           boardId,
           playerId: getSafeNumber(boardData.get('playerId'), 0),
-          spiritId,
+          spiritId: spiritId as string,
           energy,
           turn,
           round,
@@ -423,8 +425,9 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
       });
 
       setSpiritStates(nextStates);
+      setEmptyBoardIds(nextEmptyBoardIds);
       if (!selectedBoardId || !nextStates.some((state) => state.boardId === selectedBoardId)) {
-        setSelectedBoardId(nextStates[0]?.boardId ?? null);
+        selectBoard(nextStates[0]?.boardId ?? null);
       }
     };
 
@@ -680,14 +683,15 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
     });
   };
 
-  const discardUnpickedDraftCards = (gameMap: Y.Map<unknown>, unpickedIds: string[], kind: 'minor' | 'major') => {
+  const discardUnpickedDraftCards = (gameMap: Y.Map<unknown>, unpickedIds: string[], kind: 'minor' | 'major', boardId: string) => {
     const forgottenPileKey = kind === 'minor' ? 'forgottenMinorPowerCards' : 'forgottenMajorPowerCards';
     const currentForgotten = parseForgottenPowerCardList(gameMap.get(forgottenPileKey));
     const existingIds = new Set(currentForgotten.map((c) => c.id));
     const toAdd = unpickedIds
       .filter((id) => !existingIds.has(id))
       .map((id) => FORGETTABLE_POWER_CARD_BY_ID.get(id))
-      .filter((c): c is ForgottenPowerCard => c !== undefined);
+      .filter((c): c is ForgottenPowerCard => c !== undefined)
+      .map((c) => ({ ...c, sourceBoardId: boardId }));
     if (toAdd.length > 0) {
       gameMap.set(forgottenPileKey, [...currentForgotten, ...toAdd]);
     }
@@ -710,7 +714,7 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
         : [];
 
       if (pendingDraftType && offered.length > 0) {
-        discardUnpickedDraftCards(gameMap, offered, pendingDraftType);
+        discardUnpickedDraftCards(gameMap, offered, pendingDraftType, boardId);
       }
 
       spiritState.set('pendingDraftType', null);
@@ -756,7 +760,7 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
 
       if (picksRemaining <= 0 || remainingOffered.length === 0) {
         if (remainingOffered.length > 0) {
-          discardUnpickedDraftCards(gameMap, remainingOffered, pendingDraftType);
+          discardUnpickedDraftCards(gameMap, remainingOffered, pendingDraftType, boardId);
         }
         spiritState.set('pendingDraftType', null);
         spiritState.set('pendingDraftCardIds', []);
@@ -820,71 +824,37 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
 
   const openAddSpiritScreen = () => {
     setSpiritToAddId(getNextAvailableSpiritId());
+    setTargetBoardId(emptyBoardIds[0] ?? null);
     setIsAddingSpirit(true);
   };
 
-  const addSpiritBoard = (spiritIdToAdd: string) => {
-    const nextBoardIdHolder: { value: string | null } = { value: null };
-
+  const assignSpiritToBoard = (spiritIdToAdd: string, boardIdToUse: string) => {
     withGameMap((gameMap) => {
-      let boards = gameMap.get('boards') as Y.Map<unknown> | undefined;
-      if (!(boards instanceof Y.Map)) {
-        boards = new Y.Map<unknown>();
-        gameMap.set('boards', boards);
-      }
-
-      const existingBoardIds: string[] = [];
-      const usedSpiritIds = new Set<string>();
-      let highestPlayerId = 0;
-
-      boards.forEach((boardData, boardId) => {
-        if (!(boardData instanceof Y.Map)) {
-          return;
-        }
-
-        existingBoardIds.push(boardId);
-
-        const playerIdRaw = boardData.get('playerId');
-        if (typeof playerIdRaw === 'number' && Number.isFinite(playerIdRaw)) {
-          highestPlayerId = Math.max(highestPlayerId, Math.floor(playerIdRaw));
-        }
-
-        const spiritState = boardData.get('spiritState');
-        if (spiritState instanceof Y.Map) {
-          const spiritId = spiritState.get('spiritId');
-          if (typeof spiritId === 'string' && spiritId.length > 0) {
-            usedSpiritIds.add(spiritId);
-          }
-        }
-      });
-
-      if (existingBoardIds.length >= MAX_SPIRITS) {
+      const boards = gameMap.get('boards') as Y.Map<unknown> | undefined;
+      if (!(boards instanceof Y.Map) || !boards.has(boardIdToUse)) {
         return;
       }
 
-      const nextBoardId = getNextBoardId(existingBoardIds);
-      const nextSpirit =
-        SPIRITS.find((spirit) => spirit.id === spiritIdToAdd) ??
-        SPIRITS.find((spirit) => !usedSpiritIds.has(spirit.id)) ??
-        SPIRITS[0];
-      const newBoard = new Y.Map<unknown>();
-
-      newBoard.set('boardId', nextBoardId);
-      newBoard.set('playerId', highestPlayerId + 1);
-
-      const boardIndex = existingBoardIds.length;
-      newBoard.set('x', 120 + (boardIndex % 3) * 220);
-      newBoard.set('y', 100 + Math.floor(boardIndex / 3) * 170);
-      newBoard.set('rotation', 0);
-
-      const lands = new Y.Map<unknown>();
-      for (let i = 1; i <= 8; i += 1) {
-        lands.set(String(i), new Y.Array<unknown>());
+      const boardData = boards.get(boardIdToUse) as Y.Map<unknown>;
+      if (!(boardData instanceof Y.Map)) {
+        return;
       }
-      newBoard.set('lands', lands);
 
-      const spiritState = new Y.Map<unknown>();
-      spiritState.set('spiritId', nextSpirit?.id ?? '');
+      const spirit = SPIRITS.find((s) => s.id === spiritIdToAdd) ?? SPIRITS[0];
+
+      // Count existing boards to pick a color index
+      let boardIndex = 0;
+      boards.forEach((_b, bid) => {
+        if (bid < boardIdToUse) boardIndex += 1;
+      });
+
+      let spiritState = boardData.get('spiritState') as Y.Map<unknown> | undefined;
+      if (!(spiritState instanceof Y.Map)) {
+        spiritState = new Y.Map<unknown>();
+        boardData.set('spiritState', spiritState);
+      }
+
+      spiritState.set('spiritId', spirit?.id ?? spiritIdToAdd);
       spiritState.set('energy', 0);
       spiritState.set('gainMarkedTurn', 0);
       spiritState.set('gainMarkedRound', 0);
@@ -899,41 +869,23 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
       spiritState.set('presenceColor', DEFAULT_COLORS[boardIndex % DEFAULT_COLORS.length] ?? '#facc15');
       spiritState.set('cardsInPlay', []);
       spiritState.set('cardsInDiscard', []);
-      spiritState.set('cardsInHand', (nextSpirit?.uniquePowers ?? []).map((power) => power.id));
+      spiritState.set('cardsInHand', (spirit?.uniquePowers ?? []).map((p) => p.id));
       spiritState.set('draftSize', 4);
       spiritState.set('draftPicks', 1);
       spiritState.set('pendingDraftType', null);
       spiritState.set('pendingDraftCardIds', []);
       spiritState.set('pendingDraftPicksRemaining', 0);
-      newBoard.set('spiritState', spiritState);
-
-      boards.set(nextBoardId, newBoard);
-
-      const nextSpiritCount = existingBoardIds.length + 1;
-      gameMap.set('spiritCount', nextSpiritCount);
-      gameMap.set('playerCount', nextSpiritCount);
-      gameMap.set('fearThreshold', nextSpiritCount * 4);
-
-      nextBoardIdHolder.value = nextBoardId;
     });
 
-    if (nextBoardIdHolder.value) {
-      setSelectedBoardId(nextBoardIdHolder.value);
-      return true;
-    }
-
-    return false;
+    selectBoard(boardIdToUse);
   };
 
   const confirmAddSpirit = () => {
-    if (!spiritToAddId) {
+    if (!spiritToAddId || !targetBoardId) {
       return;
     }
-
-    const added = addSpiritBoard(spiritToAddId);
-    if (added) {
-      setIsAddingSpirit(false);
-    }
+    assignSpiritToBoard(spiritToAddId, targetBoardId);
+    setIsAddingSpirit(false);
   };
 
   const removeSpiritBoard = (boardId: string) => {
@@ -965,36 +917,58 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
       nextSelectedBoardIdHolder.value = remainingBoardIds[0] ?? null;
     });
 
-    setSelectedBoardId(nextSelectedBoardIdHolder.value);
+    selectBoard(nextSelectedBoardIdHolder.value);
   };
 
   if (isAddingSpirit) {
-    const availableSpiritIds = new Set(spiritStates.map((state) => state.spiritId));
+    const usedSpiritIds = new Set(spiritStates.map((state) => state.spiritId));
+    const canConfirm = !!spiritToAddId && !!targetBoardId;
 
     return (
       <section className="rounded-xl bg-white p-6 shadow">
         <div className="mb-4 flex items-start justify-between gap-4">
           <div>
             <h2 className="text-xl font-semibold text-slate-900">Add Spirit</h2>
-            <p className="text-sm text-slate-500">Choose a spirit to add. You cannot change this later without removing the spirit.</p>
+            <p className="text-sm text-slate-500">Choose a spirit and the board it will occupy.</p>
           </div>
         </div>
 
-        <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
-          <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600">Spirit to add</label>
-          <select
-            className="mt-2 w-full rounded border border-slate-300 bg-white px-3 py-2 text-sm"
-            value={spiritToAddId}
-            onChange={(event) => setSpiritToAddId(event.target.value)}
-          >
-            {SPIRITS.map((spirit) => (
-              <option key={spirit.id} value={spirit.id}>
-                {spirit.name}{availableSpiritIds.has(spirit.id) ? ' (already in game)' : ''}
-              </option>
-            ))}
-          </select>
+        <div className="space-y-4">
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 space-y-3">
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600">Spirit</label>
+              <select
+                className="mt-2 w-full rounded border border-slate-300 bg-white px-3 py-2 text-sm"
+                value={spiritToAddId}
+                onChange={(event) => setSpiritToAddId(event.target.value)}
+              >
+                {SPIRITS.map((spirit) => (
+                  <option key={spirit.id} value={spirit.id}>
+                    {spirit.name}{usedSpiritIds.has(spirit.id) ? ' (already in game)' : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
 
-          <div className="mt-4 flex gap-2">
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600">Board</label>
+              {emptyBoardIds.length === 0 ? (
+                <p className="mt-2 text-sm text-slate-500">No empty boards available.</p>
+              ) : (
+                <select
+                  className="mt-2 w-full rounded border border-slate-300 bg-white px-3 py-2 text-sm"
+                  value={targetBoardId ?? ''}
+                  onChange={(event) => setTargetBoardId(event.target.value)}
+                >
+                  {emptyBoardIds.map((bid) => (
+                    <option key={bid} value={bid}>Board {bid}</option>
+                  ))}
+                </select>
+              )}
+            </div>
+          </div>
+
+          <div className="flex gap-2">
             <button
               type="button"
               onClick={() => setIsAddingSpirit(false)}
@@ -1005,14 +979,14 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
             <button
               type="button"
               onClick={confirmAddSpirit}
-              disabled={spiritStates.length >= MAX_SPIRITS || !spiritToAddId}
+              disabled={!canConfirm}
               className={`rounded border px-3 py-1.5 text-sm font-semibold ${
-                spiritStates.length >= MAX_SPIRITS || !spiritToAddId
+                !canConfirm
                   ? 'cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400'
                   : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-100'
               }`}
             >
-              Add Selected Spirit
+              Assign Spirit to Board
             </button>
           </div>
         </div>
@@ -1035,7 +1009,7 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
             </button>
           ) : null}
         </div>
-        <p className="mt-2 text-sm text-slate-500">No spirit boards are initialized in this game yet.</p>
+        <p className="mt-2 text-sm text-slate-500">No spirits assigned yet. Use "Add Spirit" to assign a spirit to a board.</p>
       </section>
     );
   }
@@ -1055,14 +1029,14 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
           <button
             type="button"
             onClick={openAddSpiritScreen}
-            disabled={spiritStates.length >= MAX_SPIRITS}
+            disabled={emptyBoardIds.length === 0}
             className={`rounded border px-3 py-1.5 text-sm font-semibold ${
-              spiritStates.length >= MAX_SPIRITS
+              emptyBoardIds.length === 0
                 ? 'cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400'
                 : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-100'
             }`}
           >
-            Add Spirit ({spiritStates.length}/{MAX_SPIRITS})
+            Add Spirit ({spiritStates.length}/{spiritStates.length + emptyBoardIds.length})
           </button>
         ) : null}
       </div>
@@ -1076,7 +1050,7 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
                 <button
                   key={state.boardId}
                   type="button"
-                  onClick={() => setSelectedBoardId(state.boardId)}
+                  onClick={() => selectBoard(state.boardId)}
                   className={`rounded px-3 py-1.5 text-sm font-medium ${
                     selectedBoardId === state.boardId ? 'bg-slate-800 text-white' : 'text-slate-600 hover:bg-white'
                   }`}

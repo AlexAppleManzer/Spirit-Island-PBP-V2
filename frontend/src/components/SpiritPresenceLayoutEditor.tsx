@@ -136,7 +136,6 @@ const SpiritPresenceLayoutEditor: React.FC = () => {
   const [baseCardPlays, setBaseCardPlays] = useState(DEFAULT_BASE_CARD_PLAYS);
   const [baseElements, setBaseElements] = useState<Partial<Record<ElementName, number>>>(EMPTY_BASE_ELEMENTS);
   const [draggingSlotIndex, setDraggingSlotIndex] = useState<number | null>(null);
-  const [selectedSlotIndex, setSelectedSlotIndex] = useState(0);
   const [panelImageAspectRatio, setPanelImageAspectRatio] = useState(1);
   const [panelPixelSize, setPanelPixelSize] = useState({ width: 980, height: 420 });
   const [loading, setLoading] = useState(false);
@@ -373,7 +372,6 @@ const SpiritPresenceLayoutEditor: React.FC = () => {
 
   const startDraggingSlot = (event: React.PointerEvent, index: number) => {
     event.preventDefault();
-    setSelectedSlotIndex(index);
     const position = getPointerPosition(event);
     if (position) {
       updateSlotPosition(index, position.x, position.y);
@@ -546,80 +544,6 @@ const SpiritPresenceLayoutEditor: React.FC = () => {
             </div>
           </div>
 
-          {slots[selectedSlotIndex] ? (
-            <div className="rounded border border-slate-200 bg-white p-3">
-              <p className="text-xs font-semibold uppercase tracking-wide text-slate-600">Selected Slot S{selectedSlotIndex + 1}</p>
-              <label className="mt-2 block text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                Optional Note
-                <input
-                  type="text"
-                  value={slots[selectedSlotIndex].reward ?? ''}
-                  onChange={(event) => updateSlotReward(selectedSlotIndex, event.target.value)}
-                  placeholder="e.g. Reclaim 1 or Any custom note"
-                  className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-xs normal-case text-slate-700"
-                />
-              </label>
-
-              <div className="mt-2 space-y-2">
-                {slots[selectedSlotIndex].effects.map((effect, effectIndex) => (
-                  <div key={`slot-${selectedSlotIndex}-effect-${effectIndex}`} className="rounded border border-slate-200 bg-slate-50 p-2">
-                    <div className="flex items-center gap-2">
-                      <select
-                        value={effect.kind}
-                        onChange={(event) => updateSlotEffectKind(selectedSlotIndex, effectIndex, event.target.value as PresenceEffect['kind'])}
-                        className="min-w-0 flex-1 rounded border border-slate-300 bg-white px-2 py-1 text-xs"
-                      >
-                        {EFFECT_OPTIONS.map((option) => (
-                          <option key={option.value} value={option.value}>{option.label}</option>
-                        ))}
-                      </select>
-                      <button
-                        type="button"
-                        onClick={() => removeEffectFromSlot(selectedSlotIndex, effectIndex)}
-                        className="rounded border border-rose-300 bg-rose-50 px-2 py-1 text-[10px] font-semibold text-rose-700 hover:bg-rose-100"
-                      >
-                        Remove
-                      </button>
-                    </div>
-                    <div className="mt-2 grid grid-cols-2 gap-2">
-                      {effect.kind === 'add-element' ? (
-                        <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-600">
-                          Element
-                          <select
-                            value={effect.element}
-                            onChange={(event) => updateSlotEffectElement(selectedSlotIndex, effectIndex, event.target.value as ElementName)}
-                            className="mt-1 w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs"
-                          >
-                            {ELEMENT_ORDER.map((element) => (
-                              <option key={`effect-element-${element}`} value={element}>{element}</option>
-                            ))}
-                          </select>
-                        </label>
-                      ) : null}
-                      <label className="text-[10px] font-semibold uppercase tracking-wide text-slate-600">
-                        Amount
-                        <input
-                          type="number"
-                          min={0}
-                          max={20}
-                          value={effect.value}
-                          onChange={(event) => updateSlotEffectValue(selectedSlotIndex, effectIndex, Number(event.target.value))}
-                          className="mt-1 w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs"
-                        />
-                      </label>
-                    </div>
-                  </div>
-                ))}
-                <button
-                  type="button"
-                  onClick={() => addEffectToSlot(selectedSlotIndex)}
-                  className="w-full rounded border border-indigo-300 bg-indigo-50 px-2 py-1 text-xs font-semibold text-indigo-700 hover:bg-indigo-100"
-                >
-                  Add Presence Effect
-                </button>
-              </div>
-            </div>
-          ) : null}
         </div>
 
         <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
@@ -656,9 +580,8 @@ const SpiritPresenceLayoutEditor: React.FC = () => {
                   key={`slot-${index + 1}`}
                   type="button"
                   onPointerDown={(event) => startDraggingSlot(event, index)}
-                  onClick={() => setSelectedSlotIndex(index)}
                   className={`absolute flex h-6 w-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border-2 text-[10px] font-bold text-white shadow-md ${
-                    draggingSlotIndex === index || selectedSlotIndex === index
+                    draggingSlotIndex === index
                       ? 'cursor-grabbing border-white bg-emerald-600'
                       : 'cursor-grab border-slate-100 bg-slate-800/90'
                   }`}
@@ -690,15 +613,16 @@ const SpiritPresenceLayoutEditor: React.FC = () => {
               {slots.map((slot, index) => (
                 <div
                   key={`slot-coord-${index + 1}`}
-                  className={`rounded border bg-white px-2 py-1.5 ${selectedSlotIndex === index ? 'border-emerald-400' : 'border-slate-200'}`}
+                  className="rounded border border-slate-200 bg-white px-2 py-1.5"
                 >
-                  <button
-                    type="button"
-                    onClick={() => setSelectedSlotIndex(index)}
-                    className="font-semibold text-slate-700 hover:text-emerald-700"
-                  >
-                    S{index + 1}: ({slot.x}, {slot.y})
-                  </button>
+                  <p className="font-semibold text-slate-700 text-xs">S{index + 1}: ({slot.x}, {slot.y})</p>
+                  <input
+                    type="text"
+                    value={slot.reward ?? ''}
+                    onChange={(event) => updateSlotReward(index, event.target.value)}
+                    placeholder="Optional note"
+                    className="mt-1 w-full rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10px] text-slate-700"
+                  />
                   <div className="mt-1 space-y-1">
                     {slot.effects.map((effect, effectIndex) => (
                       <div key={`summary-${index}-effect-${effectIndex}`} className="flex flex-wrap items-center gap-1">

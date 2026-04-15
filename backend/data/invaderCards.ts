@@ -1,3 +1,9 @@
+/**
+ * Invader card definitions and deck-building logic — mirrored from the frontend.
+ * The backend needs this to initialize invaderDeckCards in the Yjs doc at game
+ * creation time, before any frontend client connects and runs its own init.
+ */
+
 export type InvaderCardDefinition = {
   id: string;
   stage: 1 | 2 | 3;
@@ -130,21 +136,9 @@ export const INVADER_CARDS: InvaderCardDefinition[] = [
 
 export const COASTAL_CARD_ID = 'stage-2-coast';
 
-export const DEFAULT_INVADER_DECK: InvaderCardDefinition[] = [...INVADER_CARDS];
-
 /**
  * Build the starting invader deck for a specific adversary level.
- *
- * If the adversary level has an invaderDeckOrder string (e.g., Scotland L4-6
- * "11223C23333"), the deck is built in that exact slot order:
- *   '1' = random Stage I card (non-coastal)
- *   '2' = random Stage II card (non-coastal)
- *   '3' = random Stage III card
- *   'C' = Stage II Coastal card, pinned to this slot
- *
- * Otherwise falls back to the standard 3-pile shuffle (createInvaderSetupDeck).
- *
- * Any cards not placed in the ordered deck are put in `removed`.
+ * Mirrors createInvaderSetupDeckForAdversary in frontend/src/data/invaderCards.ts.
  */
 export const createInvaderSetupDeckForAdversary = (
   invaderDeckOrder: string | null | undefined
@@ -155,13 +149,8 @@ export const createInvaderSetupDeckForAdversary = (
 
   const upperOrder = invaderDeckOrder.toUpperCase();
   const coastalCard = INVADER_CARDS.find((c) => c.id === COASTAL_CARD_ID);
-
-  // 'C' means a pinned coastal slot — exclude coastal from the random Stage II pool so it
-  // isn't double-counted.  Without 'C', coastal is a normal Stage II card that can be
-  // randomly drawn or randomly excluded.
   const hasPinnedCoastal = upperOrder.includes('C');
 
-  // Build shuffled pools for each stage
   const pool1 = shuffleCards(INVADER_CARDS.filter((c) => c.stage === 1));
   const pool2 = shuffleCards(
     INVADER_CARDS.filter((c) => c.stage === 2 && (!hasPinnedCoastal || c.id !== COASTAL_CARD_ID))
@@ -179,7 +168,6 @@ export const createInvaderSetupDeckForAdversary = (
     } else if (slot === '1') {
       card = pool1.find((c) => !usedIds.has(c.id));
     } else if (slot === '2' || slot === 'S') {
-      // 'S' (Salt Deposits) is a special Stage II replacement — treat as a random Stage II draw
       card = pool2.find((c) => !usedIds.has(c.id));
     } else if (slot === '3') {
       card = pool3.find((c) => !usedIds.has(c.id));
@@ -191,9 +179,7 @@ export const createInvaderSetupDeckForAdversary = (
     }
   }
 
-  // Everything not placed goes into removed
   const removed = INVADER_CARDS.filter((c) => !usedIds.has(c.id));
-
   return { deck, removed };
 };
 
@@ -201,12 +187,11 @@ export const createInvaderSetupDeck = (): {
   deck: InvaderCardDefinition[];
   removed: InvaderCardDefinition[];
 } => {
-  const stage1 = shuffleCards(INVADER_CARDS.filter((card) => card.stage === 1));
-  const stage2 = shuffleCards(INVADER_CARDS.filter((card) => card.stage === 2));
-  const stage3 = shuffleCards(INVADER_CARDS.filter((card) => card.stage === 3));
+  const stage1 = shuffleCards(INVADER_CARDS.filter((c) => c.stage === 1));
+  const stage2 = shuffleCards(INVADER_CARDS.filter((c) => c.stage === 2));
+  const stage3 = shuffleCards(INVADER_CARDS.filter((c) => c.stage === 3));
 
   const removed: InvaderCardDefinition[] = [];
-
   const trimmedStage1 = [...stage1];
   const trimmedStage2 = [...stage2];
   const trimmedStage3 = [...stage3];

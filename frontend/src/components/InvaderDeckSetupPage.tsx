@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import * as Y from 'yjs';
-import { DEFAULT_INVADER_DECK, createInvaderSetupDeck, type InvaderCardDefinition } from '../data/invaderCards';
+import { DEFAULT_INVADER_DECK, createInvaderSetupDeckForAdversary, type InvaderCardDefinition } from '../data/invaderCards';
 
 type InvaderCard = InvaderCardDefinition;
 
@@ -40,14 +40,20 @@ const InvaderDeckSetupPage: React.FC<InvaderDeckSetupPageProps> = ({ docRef }) =
       const rawDeck = gameMap.get('invaderDeckCards');
       const nextDeck = parseCardList(gameMap.get('invaderDeckCards'));
       const nextRemoved = parseCardList(gameMap.get('invaderRemovedCards'));
-      setDeckCards(Array.isArray(rawDeck) ? nextDeck : [...DEFAULT_INVADER_DECK]);
+      setDeckCards(Array.isArray(rawDeck) ? nextDeck : [...DEFAULT_INVADER_DECK]); // DEFAULT_INVADER_DECK fallback; transact init above runs first
       setRemovedCards(nextRemoved);
     };
 
     doc.transact(() => {
       const gameMap = doc.getMap('game') as Y.Map<unknown>;
-      if (!Array.isArray(gameMap.get('invaderDeckCards'))) {
-        gameMap.set('invaderDeckCards', [...DEFAULT_INVADER_DECK]);
+      // Only initialize if gameConfig is already present (i.e. post-sync).
+      // Pre-sync the doc is empty — writing now would race against the backend's deck.
+      const gameConfig = gameMap.get('gameConfig');
+      if (!Array.isArray(gameMap.get('invaderDeckCards')) && gameConfig instanceof Y.Map) {
+        const invaderDeckOrder = (gameConfig as Y.Map<unknown>).get('invaderDeckOrder') as string | null | undefined;
+        const { deck, removed } = createInvaderSetupDeckForAdversary(invaderDeckOrder);
+        gameMap.set('invaderDeckCards', deck);
+        gameMap.set('invaderRemovedCards', removed);
       }
       if (!Array.isArray(gameMap.get('invaderRemovedCards'))) {
         gameMap.set('invaderRemovedCards', []);
@@ -133,7 +139,12 @@ const InvaderDeckSetupPage: React.FC<InvaderDeckSetupPageProps> = ({ docRef }) =
 
   const resetInvaderDeck = () => {
     withGameMap((gameMap) => {
-      const resetDeck = createInvaderSetupDeck();
+      const gameConfig = gameMap.get('gameConfig');
+      const invaderDeckOrder =
+        gameConfig instanceof Y.Map
+          ? (gameConfig.get('invaderDeckOrder') as string | null | undefined)
+          : undefined;
+      const resetDeck = createInvaderSetupDeckForAdversary(invaderDeckOrder);
       gameMap.set('invaderDeckCards', resetDeck.deck);
       gameMap.set('invaderRemovedCards', resetDeck.removed);
       gameMap.set('invaderTrackCards', { ravage: null, build: null, explore: null });

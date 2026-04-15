@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import * as Y from 'yjs';
-import { DEFAULT_INVADER_DECK, type InvaderCardDefinition } from '../data/invaderCards';
+import { DEFAULT_INVADER_DECK, createInvaderSetupDeckForAdversary, type InvaderCardDefinition } from '../data/invaderCards';
 import {
   EVENT_CARDS,
   createShuffledEventCardDeck,
@@ -24,6 +24,15 @@ type InvaderCard = InvaderCardDefinition;
 type EventCard = EventCardDefinition;
 type FearCard = FearCardDefinition;
 type BlightCard = BlightCardDefinition;
+
+type ForgottenPowerCard = {
+  id: string;
+  name: string;
+  faceUrl: string;
+  backUrl: string;
+  kind: 'minor' | 'major' | 'unique';
+  sourceBoardId?: string;
+};
 
 type InvaderTrackCards = {
   ravage: InvaderCard[];
@@ -70,10 +79,14 @@ type GamestateSnapshot = {
   blightCard: string;
   blightCount: number;
   adversary: string;
+  forgottenMinorPowerCards: ForgottenPowerCard[];
+  forgottenMajorPowerCards: ForgottenPowerCard[];
+  forgottenUniquePowerCards: ForgottenPowerCard[];
 };
 
 interface GamestatePanelProps {
   docRef: React.MutableRefObject<Y.Doc | null>;
+  selectedBoardId?: string | null;
 }
 
 const getSafeNumber = (value: unknown, fallback: number) => {
@@ -164,6 +177,23 @@ const parseBlightCardList = (value: unknown, fallback: BlightCard[] = []): Bligh
 
 const parseSingleBlightCard = (value: unknown): BlightCard | null => {
   return isBlightCard(value) ? value : null;
+};
+
+const isForgottenPowerCard = (value: unknown): value is ForgottenPowerCard => {
+  if (!value || typeof value !== 'object') return false;
+  const card = value as Partial<ForgottenPowerCard>;
+  return (
+    typeof card.id === 'string' &&
+    typeof card.name === 'string' &&
+    typeof card.faceUrl === 'string' &&
+    typeof card.backUrl === 'string' &&
+    (card.kind === 'minor' || card.kind === 'major' || card.kind === 'unique')
+  );
+};
+
+const parseForgottenPowerCardList = (value: unknown): ForgottenPowerCard[] => {
+  if (!Array.isArray(value)) return [];
+  return value.filter(isForgottenPowerCard);
 };
 
 const clampMin = (value: number, min: number) => {
@@ -288,9 +318,15 @@ const ensureGamestateDefaults = (doc: Y.Doc) => {
     invaderTrack.set('ravageLands', new Y.Array());
   }
 
+  // Only initialize invaderDeckCards after the Yjs sync has delivered gameConfig from the
+  // backend. Pre-sync the doc is empty, so writing here would produce a standard deck that
+  // could win the CRDT merge over the adversary deck the backend already stored.
   const rawInvaderDeckCards = gameMap.get('invaderDeckCards');
-  if (!Array.isArray(rawInvaderDeckCards)) {
-    gameMap.set('invaderDeckCards', [...DEFAULT_INVADER_DECK]);
+  if (!Array.isArray(rawInvaderDeckCards) && gameConfig instanceof Y.Map) {
+    const invaderDeckOrder = gameConfig.get('invaderDeckOrder') as string | null | undefined;
+    const { deck, removed } = createInvaderSetupDeckForAdversary(invaderDeckOrder);
+    gameMap.set('invaderDeckCards', deck);
+    gameMap.set('invaderRemovedCards', removed);
   }
 
   if (!gameMap.has('invaderRemovedCards')) {
@@ -481,6 +517,9 @@ const readSnapshot = (doc: Y.Doc): GamestateSnapshot => {
     blightCard: (currentBlightCard?.name || (gameMap.get('blightCard') as string)) || 'Unknown Blight Card',
     blightCount: clampMin(getSafeNumber(gameMap.get('blightCount'), spiritCount * 2 + 1), 0),
     adversary: (gameConfig?.get('adversary') as string) || 'Unknown Adversary',
+    forgottenMinorPowerCards: parseForgottenPowerCardList(gameMap.get('forgottenMinorPowerCards')),
+    forgottenMajorPowerCards: parseForgottenPowerCardList(gameMap.get('forgottenMajorPowerCards')),
+    forgottenUniquePowerCards: parseForgottenPowerCardList(gameMap.get('forgottenUniquePowerCards')),
   };
 };
 
@@ -516,6 +555,9 @@ const initialSnapshot: GamestateSnapshot = {
   blightCard: 'Unknown Blight Card',
   blightCount: 3,
   adversary: 'Unknown Adversary',
+  forgottenMinorPowerCards: [],
+  forgottenMajorPowerCards: [],
+  forgottenUniquePowerCards: [],
 };
 
 const StatPill = ({ label, value }: { label: string; value: number | string }) => (
@@ -571,12 +613,16 @@ const DiscardPileSection = ({
   isShown,
   onToggle,
   emptyMessage,
+  onCardAction,
+  cardActionLabel,
 }: {
   title: string;
   cards: DiscardDisplayCard[];
   isShown: boolean;
   onToggle: () => void;
   emptyMessage: string;
+  onCardAction?: (cardId: string) => void;
+  cardActionLabel?: string;
 }) => (
   <div className="rounded border border-slate-200 bg-white px-3 py-2">
     <div className="flex items-center justify-between gap-2">
@@ -613,6 +659,15 @@ const DiscardPileSection = ({
                   </div>
                   <p className="mt-1 truncate text-center text-[11px] font-semibold text-slate-900">{card.name}</p>
                   {card.subtitle ? <p className="text-center text-[10px] text-slate-500">{card.subtitle}</p> : null}
+                  {onCardAction && cardActionLabel ? (
+                    <button
+                      type="button"
+                      onClick={() => onCardAction(card.id)}
+                      className="mt-1 w-full rounded border border-slate-300 bg-slate-50 px-2 py-1 text-[10px] font-medium text-slate-700 hover:bg-slate-100"
+                    >
+                      {cardActionLabel}
+                    </button>
+                  ) : null}
                 </div>
               ))}
           </div>
@@ -622,12 +677,15 @@ const DiscardPileSection = ({
   </div>
 );
 
-const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef }) => {
+const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef, selectedBoardId }) => {
   const [snapshot, setSnapshot] = useState<GamestateSnapshot>(initialSnapshot);
   const [showInvaderDiscard, setShowInvaderDiscard] = useState(false);
   const [showEventDiscard, setShowEventDiscard] = useState(false);
   const [showFearDiscard, setShowFearDiscard] = useState(false);
   const [showBlightDiscard, setShowBlightDiscard] = useState(false);
+  const [showMinorPowerDiscard, setShowMinorPowerDiscard] = useState(false);
+  const [showMajorPowerDiscard, setShowMajorPowerDiscard] = useState(false);
+  const [showUniquePowerDiscard, setShowUniquePowerDiscard] = useState(false);
 
   useEffect(() => {
     let disposed = false;
@@ -647,6 +705,22 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef }) => {
       });
 
       const syncFromDoc = () => {
+        const gm = doc.getMap('game') as Y.Map<unknown>;
+        // Post-sync fallback: if the backend never stored invaderDeckCards (old game) but
+        // gameConfig has now arrived, initialize the deck using the adversary order.
+        if (!Array.isArray(gm.get('invaderDeckCards')) && gm.get('gameConfig') instanceof Y.Map) {
+          doc.transact(() => {
+            const gm2 = doc.getMap('game') as Y.Map<unknown>;
+            if (!Array.isArray(gm2.get('invaderDeckCards'))) {
+              const gc = gm2.get('gameConfig') as Y.Map<unknown>;
+              const order = gc.get('invaderDeckOrder') as string | null | undefined;
+              const { deck, removed } = createInvaderSetupDeckForAdversary(order);
+              gm2.set('invaderDeckCards', deck);
+              gm2.set('invaderRemovedCards', removed);
+            }
+          });
+          return; // update fired by transact above will call syncFromDoc again
+        }
         setSnapshot(readSnapshot(doc));
       };
 
@@ -1017,6 +1091,35 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef }) => {
     });
   };
 
+  const sendForgottenCardToHand = (
+    cardId: string,
+    pileKey: 'forgottenMinorPowerCards' | 'forgottenMajorPowerCards' | 'forgottenUniquePowerCards',
+  ) => {
+    if (!selectedBoardId) return;
+
+    withGameMap((_doc, gameMap) => {
+      const pile = parseForgottenPowerCardList(gameMap.get(pileKey));
+      if (!pile.some((c) => c.id === cardId)) return;
+
+      gameMap.set(pileKey, pile.filter((c) => c.id !== cardId));
+
+      const boards = gameMap.get('boards');
+      if (boards instanceof Y.Map) {
+        const boardData = boards.get(selectedBoardId);
+        if (boardData instanceof Y.Map) {
+          const spiritState = boardData.get('spiritState');
+          if (spiritState instanceof Y.Map) {
+            const hand = spiritState.get('cardsInHand');
+            const currentHand: string[] = Array.isArray(hand) ? hand.filter((id) => typeof id === 'string') : [];
+            if (!currentHand.includes(cardId)) {
+              spiritState.set('cardsInHand', [...currentHand, cardId]);
+            }
+          }
+        }
+      }
+    });
+  };
+
   const eventActionsDisabled = snapshot.phase !== 'event';
 
   return (
@@ -1352,6 +1455,51 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef }) => {
           isShown={showBlightDiscard}
           onToggle={() => setShowBlightDiscard((current) => !current)}
           emptyMessage="No blight cards discarded yet."
+        />
+
+        <DiscardPileSection
+          title="Forgotten Minor Powers"
+          cards={snapshot.forgottenMinorPowerCards.map((card) => ({
+            id: card.id,
+            name: card.name,
+            faceUrl: card.faceUrl,
+            subtitle: 'Minor Power',
+          }))}
+          isShown={showMinorPowerDiscard}
+          onToggle={() => setShowMinorPowerDiscard((current) => !current)}
+          emptyMessage="No minor powers forgotten yet."
+          onCardAction={(cardId) => sendForgottenCardToHand(cardId, 'forgottenMinorPowerCards')}
+          cardActionLabel="Send to Hand"
+        />
+
+        <DiscardPileSection
+          title="Forgotten Major Powers"
+          cards={snapshot.forgottenMajorPowerCards.map((card) => ({
+            id: card.id,
+            name: card.name,
+            faceUrl: card.faceUrl,
+            subtitle: 'Major Power',
+          }))}
+          isShown={showMajorPowerDiscard}
+          onToggle={() => setShowMajorPowerDiscard((current) => !current)}
+          emptyMessage="No major powers forgotten yet."
+          onCardAction={(cardId) => sendForgottenCardToHand(cardId, 'forgottenMajorPowerCards')}
+          cardActionLabel="Send to Hand"
+        />
+
+        <DiscardPileSection
+          title="Forgotten Unique Powers"
+          cards={snapshot.forgottenUniquePowerCards.map((card) => ({
+            id: card.id,
+            name: card.name,
+            faceUrl: card.faceUrl,
+            subtitle: 'Unique Power',
+          }))}
+          isShown={showUniquePowerDiscard}
+          onToggle={() => setShowUniquePowerDiscard((current) => !current)}
+          emptyMessage="No unique powers forgotten yet."
+          onCardAction={(cardId) => sendForgottenCardToHand(cardId, 'forgottenUniquePowerCards')}
+          cardActionLabel="Send to Hand"
         />
       </section>
     </aside>

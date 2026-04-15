@@ -22,7 +22,26 @@ type Game = {
   turn?: number;
   discordWebhookUrl?: string;
   createdAt: string;
+  adversaryId?: string;
+  adversaryLevel?: number;
 };
+
+type AdversaryLevel = {
+  level: number;
+  difficulty: number;
+  fearThresholds: number[];
+  invaderDeckOrder: string;
+  setupNotes?: string;
+};
+
+type AdversaryDef = {
+  id: string;
+  name: string;
+  description: string;
+  levels: AdversaryLevel[];
+};
+
+type LobbyView = 'list' | 'create' | 'spirit-editor';
 
 function App() {
   const [token, setToken] = useState<string | null>(() => localStorage.getItem('authToken'));
@@ -33,9 +52,16 @@ function App() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [games, setGames] = useState<Game[]>([]);
+  const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
+  const [lobbyView, setLobbyView] = useState<LobbyView>('list');
+  const [adversaries, setAdversaries] = useState<AdversaryDef[]>([]);
+
+  // Create-game form state
   const [newGameName, setNewGameName] = useState('');
   const [newGameWebhook, setNewGameWebhook] = useState('');
-  const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
+  const [newGameSpiritCount, setNewGameSpiritCount] = useState(2);
+  const [newGameAdversaryId, setNewGameAdversaryId] = useState('none');
+  const [newGameAdversaryLevel, setNewGameAdversaryLevel] = useState(0);
 
   const authHeaders = useMemo(() => {
     return token ? { Authorization: `Bearer ${token}` } : undefined;
@@ -73,12 +99,24 @@ function App() {
     void refreshGames();
   }, [token, refreshGames]);
 
+  // Fetch adversary list once on login (no auth required)
+  useEffect(() => {
+    if (!token) return;
+
+    fetch(`${BACKEND_URL}/api/adversaries`)
+      .then((r) => r.json())
+      .then((data: AdversaryDef[]) => setAdversaries(data))
+      .catch(() => {});
+  }, [token]);
+
   const clearAuth = () => {
     setToken(null);
     setUser(null);
     localStorage.removeItem('authToken');
     setSelectedGameId(null);
     setGames([]);
+    setAdversaries([]);
+    setLobbyView('list');
   };
 
   const handleAuthSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -128,20 +166,28 @@ function App() {
       headers: { 'Content-Type': 'application/json', ...(authHeaders ?? {}) },
       body: JSON.stringify({
         name: newGameName,
-        discordWebhookUrl: newGameWebhook,
+        discordWebhookUrl: newGameWebhook || undefined,
+        spiritCount: newGameSpiritCount,
+        adversaryId: newGameAdversaryId,
+        adversaryLevel: newGameAdversaryLevel,
       }),
     });
 
     if (!response.ok) {
       const data = await response.json();
-      setError(data.message ?? 'Unable to create game');
+      setError(data.message ?? data.error ?? 'Unable to create game');
       return;
     }
 
     const created = await response.json();
     setGames((current) => [...current, created]);
+    // Reset form and return to list
     setNewGameName('');
     setNewGameWebhook('');
+    setNewGameSpiritCount(2);
+    setNewGameAdversaryId('none');
+    setNewGameAdversaryLevel(0);
+    setLobbyView('list');
   };
 
   const handleJoinGame = async (gameId: string) => {
@@ -261,6 +307,23 @@ function App() {
     }
   }
 
+  // Show spirit editor page
+  if (lobbyView === 'spirit-editor') {
+    return (
+      <div className="min-h-screen bg-slate-100 p-6">
+        <div className="mx-auto w-full max-w-6xl space-y-4">
+          <button
+            onClick={() => setLobbyView('list')}
+            className="text-sm text-slate-500 hover:text-slate-800"
+          >
+            ← Back to lobby
+          </button>
+          <SpiritPresenceLayoutEditor />
+        </div>
+      </div>
+    );
+  }
+
   // Show lobby
   return (
     <div className="min-h-screen bg-slate-100 p-6">
@@ -280,79 +343,219 @@ function App() {
           </div>
         </header>
 
-        <section className="grid gap-6 lg:grid-cols-[320px_1fr]">
+        <section className="flex flex-col gap-6 max-w-lg">
           <div className="rounded-xl bg-white p-6 shadow">
-            <h2 className="text-lg font-semibold mb-4">Games</h2>
-            <div className="space-y-3">
-              <div className="flex gap-2">
-                <input
-                  value={newGameName}
-                  onChange={(event) => setNewGameName(event.target.value)}
-                  className="flex-1 rounded border px-3 py-2"
-                  placeholder="New game name"
-                />
+            {lobbyView === 'list' ? (
+              <>
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-lg font-semibold">Games</h2>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setLobbyView('spirit-editor')}
+                      className="rounded border border-slate-300 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
+                    >
+                      Spirit Editor
+                    </button>
+                    <button
+                      onClick={() => { setError(null); setLobbyView('create'); }}
+                      className="rounded bg-slate-800 px-3 py-2 text-sm text-white"
+                    >
+                      + New Game
+                    </button>
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  {games.length === 0 && (
+                    <p className="text-sm text-slate-500">No active games yet.</p>
+                  )}
+                  {games.map((game) => {
+                    const adv = adversaries.find((a) => a.id === game.adversaryId);
+                    const lvl = adv?.levels.find((l) => l.level === (game.adversaryLevel ?? 0));
+                    const adversaryLabel =
+                      adv && adv.id !== 'none'
+                        ? `${adv.name} L${game.adversaryLevel ?? 0} · Fear: ${lvl?.fearThresholds.join('/') ?? '?'}`
+                        : null;
+                    return (
+                      <div key={game.id} className="rounded border p-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <div>
+                            <p className="font-semibold">{game.name}</p>
+                            <p className="text-sm text-slate-500">
+                              Phase: {game.currentPhase ?? 'growth'} · Turn {game.turn ?? 1}
+                            </p>
+                            <p className="text-xs text-slate-500">
+                              Spirits: {game.spiritCount ?? game.playerCount ?? game.playerIds.length}/6
+                            </p>
+                            {adversaryLabel && (
+                              <p className="text-xs text-slate-400">{adversaryLabel}</p>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {game.playerIds.includes(user?.id ?? -1) ? (
+                              <>
+                                <button
+                                  onClick={() => setSelectedGameId(game.id)}
+                                  className="rounded bg-slate-800 px-3 py-2 text-sm text-white"
+                                >
+                                  Open
+                                </button>
+                                <button
+                                  onClick={() => handleLeaveGame(game.id)}
+                                  className="rounded border border-slate-300 px-3 py-2 text-sm text-slate-700"
+                                >
+                                  Leave
+                                </button>
+                              </>
+                            ) : (
+                              <button
+                                onClick={() => handleJoinGame(game.id)}
+                                className="rounded bg-slate-800 px-3 py-2 text-sm text-white"
+                              >
+                                Join
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            ) : (
+              /* ── Create Game Screen ────────────────────────────────── */
+              <>
                 <button
-                  onClick={handleCreateGame}
-                  className="rounded bg-slate-800 px-3 py-2 text-white"
+                  onClick={() => { setError(null); setLobbyView('list'); }}
+                  className="mb-4 text-sm text-slate-500 hover:text-slate-800"
                 >
-                  Create
+                  ← Back to games
                 </button>
-              </div>
-              <input
-                value={newGameWebhook}
-                onChange={(event) => setNewGameWebhook(event.target.value)}
-                className="w-full rounded border px-3 py-2"
-                placeholder="Discord webhook URL (optional)"
-              />
-              <div className="space-y-2">
-                {games.length === 0 && (
-                  <p className="text-sm text-slate-500">No active games yet.</p>
-                )}
-                {games.map((game) => (
-                  <div key={game.id} className="rounded border p-3">
-                    <div className="flex items-center justify-between gap-2">
-                      <div>
-                        <p className="font-semibold">{game.name}</p>
-                        <p className="text-sm text-slate-500">
-                          Phase: {game.currentPhase ?? 'growth'} · Turn {game.turn ?? 1}
-                        </p>
-                        <p className="text-xs text-slate-500">
-                          Spirits: {game.spiritCount ?? game.playerCount ?? game.playerIds.length}/6
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        {game.playerIds.includes(user?.id ?? -1) ? (
-                          <>
-                            <button
-                              onClick={() => setSelectedGameId(game.id)}
-                              className="rounded bg-slate-800 px-3 py-2 text-sm text-white"
-                            >
-                              Open
-                            </button>
-                            <button
-                              onClick={() => handleLeaveGame(game.id)}
-                              className="rounded border border-slate-300 px-3 py-2 text-sm text-slate-700"
-                            >
-                              Leave
-                            </button>
-                          </>
-                        ) : (
-                          <button
-                            onClick={() => handleJoinGame(game.id)}
-                            className="rounded bg-slate-800 px-3 py-2 text-sm text-white"
-                          >
-                            Join
-                          </button>
-                        )}
-                      </div>
+                <h2 className="text-lg font-semibold mb-4">New Game</h2>
+                <div className="space-y-4">
+                  {/* Game name */}
+                  <label className="block">
+                    <span className="text-sm font-medium text-slate-700">Game Name</span>
+                    <input
+                      value={newGameName}
+                      onChange={(e) => setNewGameName(e.target.value)}
+                      className="mt-1 block w-full rounded border px-3 py-2"
+                      placeholder="e.g. Saturday PBP Game"
+                    />
+                  </label>
+
+                  {/* Player / spirit count */}
+                  <div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-medium text-slate-700">Players</span>
+                      <span className="text-sm font-semibold text-slate-900">{newGameSpiritCount}</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={1}
+                      max={6}
+                      step={1}
+                      value={newGameSpiritCount}
+                      onChange={(e) => setNewGameSpiritCount(Number(e.target.value))}
+                      className="mt-1 w-full accent-slate-800"
+                    />
+                    <div className="flex justify-between text-xs text-slate-400">
+                      <span>1</span><span>6</span>
                     </div>
                   </div>
-                ))}
-              </div>
-            </div>
+
+                  {/* Adversary picker */}
+                  <div>
+                    <label className="block">
+                      <span className="text-sm font-medium text-slate-700">Adversary</span>
+                      <select
+                        value={newGameAdversaryId}
+                        onChange={(e) => {
+                          setNewGameAdversaryId(e.target.value);
+                          setNewGameAdversaryLevel(0);
+                        }}
+                        className="mt-1 block w-full rounded border px-3 py-2 bg-white"
+                      >
+                        {adversaries.map((adv) => (
+                          <option key={adv.id} value={adv.id}>
+                            {adv.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+
+                  {/* Level picker — hidden for 'none' */}
+                  {newGameAdversaryId !== 'none' && (() => {
+                    const adv = adversaries.find((a) => a.id === newGameAdversaryId);
+                    const maxLevel = adv ? adv.levels.length - 1 : 6;
+                    const selectedLvl = adv?.levels.find((l) => l.level === newGameAdversaryLevel);
+                    return (
+                      <div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-sm font-medium text-slate-700">Level</span>
+                          <span className="text-sm font-semibold text-slate-900">{newGameAdversaryLevel}</span>
+                        </div>
+                        <input
+                          type="range"
+                          min={0}
+                          max={maxLevel}
+                          step={1}
+                          value={newGameAdversaryLevel}
+                          onChange={(e) => setNewGameAdversaryLevel(Number(e.target.value))}
+                          className="mt-1 w-full accent-slate-800"
+                        />
+                        <div className="flex justify-between text-xs text-slate-400">
+                          <span>0</span><span>{maxLevel}</span>
+                        </div>
+                        {selectedLvl && (
+                          <div className="mt-2 rounded bg-slate-50 border p-3 text-xs text-slate-600 space-y-1">
+                            <p>
+                              <span className="font-medium">Difficulty:</span> +{selectedLvl.difficulty} ·{' '}
+                              <span className="font-medium">Fear:</span>{' '}
+                              {selectedLvl.fearThresholds.join('/')} ·{' '}
+                              <span className="font-medium">Invader cards:</span>{' '}
+                              {selectedLvl.invaderDeckOrder.length}
+                            </p>
+                            <p>
+                              <span className="font-medium">Deck order:</span>{' '}
+                              {selectedLvl.invaderDeckOrder}
+                            </p>
+                            {selectedLvl.setupNotes && (
+                              <p className="text-slate-500 italic">{selectedLvl.setupNotes}</p>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
+
+                  {/* Discord webhook (optional) */}
+                  <label className="block">
+                    <span className="text-sm font-medium text-slate-700">
+                      Discord Webhook{' '}
+                      <span className="text-slate-400 font-normal">(optional)</span>
+                    </span>
+                    <input
+                      value={newGameWebhook}
+                      onChange={(e) => setNewGameWebhook(e.target.value)}
+                      className="mt-1 block w-full rounded border px-3 py-2"
+                      placeholder="https://discord.com/api/webhooks/..."
+                    />
+                  </label>
+
+                  {error && <p className="text-sm text-red-600">{error}</p>}
+
+                  <button
+                    onClick={handleCreateGame}
+                    className="w-full rounded bg-slate-800 px-4 py-2 text-white font-medium"
+                  >
+                    Create Game
+                  </button>
+                </div>
+              </>
+            )}
           </div>
 
-          <SpiritPresenceLayoutEditor />
         </section>
       </div>
     </div>
