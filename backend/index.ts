@@ -33,9 +33,11 @@ type GameDto = {
   name: string;
   ownerId: number;
   playerIds: number[];
+  playerUsernames: string[];
   spiritCount: number;
   playerCount: number;
   status: GameStatus | string;
+  outcome: 'win' | 'loss' | null;
   currentPhase: string;
   turn: number;
   discordWebhookUrl: string | null;
@@ -322,17 +324,33 @@ const normalizePlayerIds = (playerIds: unknown): number[] => {
   return Array.from(new Set(ids));
 };
 
-const mapGameRowToDto = (row: Record<string, any>): GameDto => {
+const mapGameRowToDto = async (row: Record<string, any>): Promise<GameDto> => {
   const ids = normalizePlayerIds(row.player_ids);
   const spiritCount = ids.length;
+  let playerUsernames: string[] = [];
+  if (ids.length > 0) {
+    const usernameResult = await pool.query(
+      'SELECT id, username FROM users WHERE id = ANY($1)',
+      [ids]
+    );
+    const usernameMap = new Map(
+      (usernameResult.rows as Array<{ id: number; username: string }>).map((r) => [r.id, r.username])
+    );
+    playerUsernames = ids.map((id) => usernameMap.get(id) ?? String(id));
+  }
+  const rawOutcome = row.outcome;
+  const outcome: 'win' | 'loss' | null =
+    rawOutcome === 'win' ? 'win' : rawOutcome === 'loss' ? 'loss' : null;
   return {
     id: String(row.id),
     name: (typeof row.name === 'string' && row.name.trim()) || `Game ${row.id}`,
     ownerId: toInt(row.owner_id) ?? 0,
     playerIds: ids,
+    playerUsernames,
     spiritCount,
     playerCount: spiritCount,
     status: (row.status as GameStatus) || 'active',
+    outcome,
     currentPhase: (row.current_phase as string) || 'growth',
     turn: toInt(row.round) ?? 1,
     discordWebhookUrl: typeof row.discord_webhook_url === 'string' ? row.discord_webhook_url : null,
@@ -854,9 +872,9 @@ app.get('/api/auth/me', verifyToken, async (req: Request, res: Response) => {
 app.get('/api/games', verifyToken, async (req: Request, res: Response) => {
   try {
     const result = await pool.query(
-      "SELECT * FROM games WHERE status = 'active' ORDER BY created_at DESC LIMIT 50"
+      "SELECT * FROM games WHERE status != 'archived' ORDER BY created_at DESC LIMIT 50"
     );
-    res.json(result.rows.map((row: Record<string, any>) => mapGameRowToDto(row)));
+    res.json(await Promise.all(result.rows.map((row: Record<string, any>) => mapGameRowToDto(row))));
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -902,7 +920,7 @@ app.post('/api/games', verifyToken, async (req: Request, res: Response) => {
     const ydoc = await getGameDoc(String(createdGame.id));
     ensureGameDefaults(ydoc.getMap('game'), selectedSpiritCount, selectedAdversaryId, selectedAdversaryLevel);
 
-    res.status(201).json(mapGameRowToDto(createdGame));
+    res.status(201).json(await mapGameRowToDto(createdGame));
   } catch (err: any) {
     console.error('Create game error:', err);
     res.status(500).json({ error: 'Internal error' });
@@ -925,7 +943,7 @@ app.get('/api/games/:id/state', verifyToken, async (req: Request, res: Response)
       return res.status(403).json({ error: 'You are not a member of this game' });
     }
 
-    res.json(mapGameRowToDto(game));
+    res.json(await mapGameRowToDto(game));
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -995,7 +1013,7 @@ app.post('/api/games/:id/join', verifyToken, async (req: Request, res: Response)
     res.json({
       message: 'Joined game',
       boardId: boardIdForUser,
-      game: mapGameRowToDto(refreshedGame.rows[0]),
+      game: await mapGameRowToDto(refreshedGame.rows[0]),
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -1051,8 +1069,328 @@ app.post('/api/games/:id/leave', verifyToken, async (req: Request, res: Response
 
     res.json({
       message: 'Left game',
-      game: mapGameRowToDto(updateResult.rows[0]),
+      game: await mapGameRowToDto(updateResult.rows[0]),
     });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Mark game outcome (owner-only)
+app.patch('/api/games/:id/outcome', verifyToken, async (req: Request, res: Response) => {
+  try {
+    const id = req.params.id as string;
+    const userId = (req as any).user.id;
+    const { outcome } = req.body as { outcome: unknown };
+
+    if (outcome !== 'win' && outcome !== 'loss' && outcome !== null) {
+      return res.status(400).json({ error: 'outcome must be "win", "loss", or null' });
+    }
+
+    const gameResult = await pool.query('SELECT * FROM games WHERE id = $1', [id]);
+    if (gameResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Game not found' });
+    }
+    const game = gameResult.rows[0] as Record<string, any>;
+    if (toInt(game.owner_id) !== userId) {
+      return res.status(403).json({ error: 'Only the game owner can set the outcome' });
+    }
+
+    const newStatus = outcome === null ? 'active' : 'completed';
+    const updateResult = await pool.query(
+      'UPDATE games SET outcome = $1, status = $2 WHERE id = $3 RETURNING *',
+      [outcome, newStatus, id]
+    );
+
+    // Sync to Yjs so connected clients see it immediately
+    const ydoc = await getGameDoc(id);
+    ydoc.getMap('game').set('outcome', outcome ?? '');
+
+    res.json(await mapGameRowToDto(updateResult.rows[0]));
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete a game (owner-only)
+app.delete('/api/games/:id', verifyToken, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const userId = (req as any).user.id;
+
+    const gameResult = await pool.query('SELECT * FROM games WHERE id = $1', [id]);
+    if (gameResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Game not found' });
+    }
+    const game = gameResult.rows[0] as Record<string, any>;
+    if (toInt(game.owner_id) !== userId) {
+      return res.status(403).json({ error: 'Only the game owner can delete this game' });
+    }
+
+    // Cascade delete dependent rows first (FK constraints)
+    await pool.query('DELETE FROM game_invite_tokens WHERE game_id = $1', [id]);
+    await pool.query('DELETE FROM game_checkpoints WHERE game_id = $1', [id]);
+    await pool.query('DELETE FROM game_snapshots WHERE game_id = $1', [id]);
+    await pool.query('DELETE FROM games WHERE id = $1', [id]);
+
+    // Clean up in-memory Yjs room if open
+    const room = roomStates.get(String(id));
+    if (room) {
+      room.ydoc.destroy();
+      roomStates.delete(String(id));
+    }
+
+    res.status(204).send();
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Search users by username (for owner-initiated invites)
+app.get('/api/users/search', verifyToken, async (req: Request, res: Response) => {
+  try {
+    const { username } = req.query as { username?: string };
+    if (!username || !username.trim()) {
+      return res.status(400).json({ error: 'username query param is required' });
+    }
+    const result = await pool.query(
+      'SELECT id, username FROM users WHERE LOWER(username) = LOWER($1)',
+      [username.trim()]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    const row = result.rows[0] as { id: number; username: string };
+    res.json({ id: row.id, username: row.username });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Add a player to a game (owner-initiated invite)
+app.post('/api/games/:id/players', verifyToken, async (req: Request, res: Response) => {
+  try {
+    const id = req.params.id as string;
+    const ownerId = (req as any).user.id;
+    const { username } = req.body as { username?: string };
+
+    if (!username || !username.trim()) {
+      return res.status(400).json({ error: 'username is required' });
+    }
+
+    const gameResult = await pool.query('SELECT * FROM games WHERE id = $1', [id]);
+    if (gameResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Game not found' });
+    }
+    const game = gameResult.rows[0] as Record<string, any>;
+    if (toInt(game.owner_id) !== ownerId) {
+      return res.status(403).json({ error: 'Only the game owner can invite players' });
+    }
+
+    const userResult = await pool.query(
+      'SELECT id, username FROM users WHERE LOWER(username) = LOWER($1)',
+      [username.trim()]
+    );
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    const invitedUser = userResult.rows[0] as { id: number; username: string };
+
+    const playerIds = normalizePlayerIds(game.player_ids);
+    if (playerIds.includes(invitedUser.id)) {
+      return res.status(409).json({ error: 'User is already in this game' });
+    }
+    if (playerIds.length >= MAX_PLAYERS_PER_GAME) {
+      return res.status(409).json({ error: `Game is full (max ${MAX_PLAYERS_PER_GAME} players)` });
+    }
+
+    const updatedPlayerIds = [...playerIds, invitedUser.id];
+    await pool.query(
+      'UPDATE games SET player_ids = $1::integer[] WHERE id = $2',
+      [updatedPlayerIds, id]
+    );
+
+    // Init board in Yjs for the new player (same as join logic)
+    const ydoc = await getGameDoc(id);
+    const gameMap = ydoc.getMap('game');
+    const boards = gameMap.get('boards') as Y.Map<any>;
+    const existingBoardIds: string[] = [];
+    let boardIdForUser: string | undefined;
+    if (boards) {
+      boards.forEach((boardData: any, boardId: string) => {
+        existingBoardIds.push(boardId);
+        if (toInt(boardData.get('playerId')) === invitedUser.id) {
+          boardIdForUser = boardId;
+        }
+      });
+    }
+    if (!boardIdForUser && existingBoardIds.length === 0) {
+      const nextBoardId = getNextBoardId(existingBoardIds);
+      initializePlayerBoard(ydoc, invitedUser.id, nextBoardId);
+    }
+
+    const refreshedGame = await pool.query('SELECT * FROM games WHERE id = $1', [id]);
+    res.json(await mapGameRowToDto(refreshedGame.rows[0]));
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Remove a player from a game (owner-only)
+app.delete('/api/games/:id/players/:playerId', verifyToken, async (req: Request, res: Response) => {
+  try {
+    const id = req.params.id as string;
+    const { playerId } = req.params;
+    const ownerId = (req as any).user.id;
+    const targetId = toInt(playerId);
+    if (targetId === null) {
+      return res.status(400).json({ error: 'Invalid playerId' });
+    }
+
+    const gameResult = await pool.query('SELECT * FROM games WHERE id = $1', [id]);
+    if (gameResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Game not found' });
+    }
+    const game = gameResult.rows[0] as Record<string, any>;
+    if (toInt(game.owner_id) !== ownerId) {
+      return res.status(403).json({ error: 'Only the game owner can remove players' });
+    }
+    if (targetId === ownerId) {
+      return res.status(400).json({ error: 'Owner cannot remove themselves; use Leave instead' });
+    }
+
+    const currentPlayerIds = normalizePlayerIds(game.player_ids);
+    if (!currentPlayerIds.includes(targetId)) {
+      return res.status(404).json({ error: 'Player not in this game' });
+    }
+
+    const updatedPlayerIds = currentPlayerIds.filter((pid) => pid !== targetId);
+    const updateResult = await pool.query(
+      'UPDATE games SET player_ids = $1::integer[] WHERE id = $2 RETURNING *',
+      [updatedPlayerIds, id]
+    );
+
+    // Remove board from Yjs
+    const ydoc = await getGameDoc(id);
+    const gameMap = ydoc.getMap('game');
+    const boards = gameMap.get('boards') as Y.Map<any> | undefined;
+    if (boards) {
+      const toDelete: string[] = [];
+      boards.forEach((boardData: any, boardId: string) => {
+        if (toInt(boardData.get('playerId')) === targetId) toDelete.push(boardId);
+      });
+      toDelete.forEach((bid) => boards.delete(bid));
+    }
+
+    res.json(await mapGameRowToDto(updateResult.rows[0]));
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Create an invite token for a game (owner-only)
+app.post('/api/games/:id/invite-token', verifyToken, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const userId = (req as any).user.id;
+    const { expiresInHours, singleUse } = req.body as { expiresInHours?: number; singleUse?: boolean };
+
+    const gameResult = await pool.query('SELECT * FROM games WHERE id = $1', [id]);
+    if (gameResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Game not found' });
+    }
+    const game = gameResult.rows[0] as Record<string, any>;
+    if (toInt(game.owner_id) !== userId) {
+      return res.status(403).json({ error: 'Only the game owner can create invite tokens' });
+    }
+
+    const crypto = await import('crypto');
+    const token = crypto.randomBytes(32).toString('hex');
+    const expiresAt = typeof expiresInHours === 'number'
+      ? new Date(Date.now() + expiresInHours * 3600 * 1000)
+      : null;
+    const isSingleUse = singleUse === true;
+
+    await pool.query(
+      'INSERT INTO game_invite_tokens (token, game_id, created_by, expires_at, single_use) VALUES ($1, $2, $3, $4, $5)',
+      [token, id, userId, expiresAt, isSingleUse]
+    );
+
+    res.json({ token });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Join via invite token
+app.post('/api/join/:token', verifyToken, async (req: Request, res: Response) => {
+  try {
+    const { token } = req.params;
+    const userId = (req as any).user.id;
+
+    const tokenResult = await pool.query(
+      'SELECT * FROM game_invite_tokens WHERE token = $1',
+      [token]
+    );
+    if (tokenResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Invite link not found' });
+    }
+    const invite = tokenResult.rows[0] as Record<string, any>;
+
+    if (invite.expires_at && new Date(invite.expires_at) < new Date()) {
+      return res.status(410).json({ error: 'Invite link has expired' });
+    }
+    if (invite.single_use && invite.used_by !== null) {
+      return res.status(410).json({ error: 'Invite link has already been used' });
+    }
+
+    const gameId = String(invite.game_id);
+    const gameResult = await pool.query('SELECT * FROM games WHERE id = $1', [gameId]);
+    if (gameResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Game not found' });
+    }
+    const game = gameResult.rows[0] as Record<string, any>;
+    const playerIds = normalizePlayerIds(game.player_ids);
+
+    if (!playerIds.includes(userId) && playerIds.length >= MAX_PLAYERS_PER_GAME) {
+      return res.status(409).json({ error: `Game is full (max ${MAX_PLAYERS_PER_GAME} players)` });
+    }
+
+    let updatedPlayerIds = playerIds;
+    if (!playerIds.includes(userId)) {
+      updatedPlayerIds = [...playerIds, userId];
+      await pool.query(
+        'UPDATE games SET player_ids = $1::integer[] WHERE id = $2',
+        [updatedPlayerIds, gameId]
+      );
+    }
+
+    if (invite.single_use) {
+      await pool.query(
+        'UPDATE game_invite_tokens SET used_by = $1 WHERE token = $2',
+        [userId, token]
+      );
+    }
+
+    // Init Yjs board
+    const ydoc = await getGameDoc(gameId);
+    const gameMap = ydoc.getMap('game');
+    const boards = gameMap.get('boards') as Y.Map<any>;
+    const existingBoardIds: string[] = [];
+    let boardIdForUser: string | undefined;
+    if (boards) {
+      boards.forEach((boardData: any, boardId: string) => {
+        existingBoardIds.push(boardId);
+        if (toInt(boardData.get('playerId')) === userId) boardIdForUser = boardId;
+      });
+    }
+    if (!boardIdForUser && existingBoardIds.length === 0) {
+      const nextBoardId = getNextBoardId(existingBoardIds);
+      initializePlayerBoard(ydoc, userId, nextBoardId);
+    }
+
+    const refreshedGame = await pool.query('SELECT * FROM games WHERE id = $1', [gameId]);
+    res.json({ message: 'Joined game', game: await mapGameRowToDto(refreshedGame.rows[0]) });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

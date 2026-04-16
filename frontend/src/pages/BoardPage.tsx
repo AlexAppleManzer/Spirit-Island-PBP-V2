@@ -28,10 +28,12 @@ type Game = {
 interface BoardPageProps {
   gameId: string;
   game: Game;
+  userId: number;
+  token: string;
   onBack: () => void;
 }
 
-const BoardPage: React.FC<BoardPageProps> = ({ gameId, game, onBack }) => {
+const BoardPage: React.FC<BoardPageProps> = ({ gameId, game, userId, token, onBack }) => {
   const [wsConnected, setWsConnected] = useState(false);
   const [error] = useState<string | null>(null);
   const [subpage, setSubpage] = useState<'board' | 'spirit' | 'invader-setup' | 'event-setup'>('board');
@@ -317,7 +319,13 @@ const BoardPage: React.FC<BoardPageProps> = ({ gameId, game, onBack }) => {
               }}
             >
               <div className="h-full min-h-0 overflow-hidden rounded-lg border border-slate-200 bg-white shadow">
-                <GamestatePanel docRef={docRef} selectedBoardId={selectedSpiritBoardId} />
+                <GamestatePanel
+                  docRef={docRef}
+                  selectedBoardId={selectedSpiritBoardId}
+                  isOwner={game.ownerId === userId}
+                  gameId={gameId}
+                  token={token}
+                />
               </div>
               <div
                 role="separator"

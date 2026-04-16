@@ -39,3 +39,21 @@ CREATE TABLE game_checkpoints (
   is_auto BOOLEAN DEFAULT FALSE,
   phase VARCHAR(20)
 );
+
+-- Outcome column for games (win/loss/null)
+ALTER TABLE games ADD COLUMN IF NOT EXISTS outcome VARCHAR(10) DEFAULT NULL;
+
+-- Adversary columns (added dynamically at runtime but declared here for clarity)
+ALTER TABLE games ADD COLUMN IF NOT EXISTS adversary_id VARCHAR(50) DEFAULT 'none';
+ALTER TABLE games ADD COLUMN IF NOT EXISTS adversary_level INTEGER DEFAULT 0;
+
+-- Invite tokens for joining games via link
+CREATE TABLE IF NOT EXISTS game_invite_tokens (
+  token VARCHAR(64) PRIMARY KEY,
+  game_id INTEGER REFERENCES games(id) ON DELETE CASCADE,
+  created_by INTEGER REFERENCES users(id),
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  expires_at TIMESTAMP,
+  single_use BOOLEAN DEFAULT FALSE,
+  used_by INTEGER REFERENCES users(id)
+);

@@ -15,9 +15,11 @@ type Game = {
   name: string;
   ownerId: number;
   playerIds: number[];
+  playerUsernames?: string[];
   spiritCount?: number;
   playerCount?: number;
   status: string;
+  outcome?: 'win' | 'loss' | null;
   currentPhase?: string;
   turn?: number;
   discordWebhookUrl?: string;
@@ -63,6 +65,11 @@ function App() {
   const [newGameAdversaryId, setNewGameAdversaryId] = useState('none');
   const [newGameAdversaryLevel, setNewGameAdversaryLevel] = useState(0);
 
+  // Manage players state
+  const [managingGameId, setManagingGameId] = useState<string | null>(null);
+  const [inviteUsername, setInviteUsername] = useState('');
+  const [inviteError, setInviteError] = useState<string | null>(null);
+
   const authHeaders = useMemo(() => {
     return token ? { Authorization: `Bearer ${token}` } : undefined;
   }, [token]);
@@ -107,6 +114,42 @@ function App() {
       .then((r) => r.json())
       .then((data: AdversaryDef[]) => setAdversaries(data))
       .catch(() => {});
+  }, [token]);
+
+  // Handle invite token in URL: ?invite=<token>
+  useEffect(() => {
+    if (!token) return;
+    const params = new URLSearchParams(window.location.search);
+    const inviteToken = params.get('invite');
+    if (!inviteToken) return;
+
+    // Clear the token from the URL immediately
+    const url = new URL(window.location.href);
+    url.searchParams.delete('invite');
+    window.history.replaceState({}, '', url.toString());
+
+    const joinViaToken = async () => {
+      const response = await fetch(`${BACKEND_URL}/api/join/${inviteToken}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      });
+      if (response.ok) {
+        const data = await response.json();
+        if (data?.game) {
+          setGames((prev) => {
+            const exists = prev.find((g) => g.id === data.game.id);
+            return exists ? prev.map((g) => (g.id === data.game.id ? data.game : g)) : [...prev, data.game];
+          });
+          setSelectedGameId(data.game.id);
+        }
+      } else {
+        const data = await response.json();
+        setError(data.error ?? 'Invalid or expired invite link');
+      }
+    };
+
+    void joinViaToken();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
   const clearAuth = () => {
@@ -190,30 +233,13 @@ function App() {
     setLobbyView('list');
   };
 
-  const handleJoinGame = async (gameId: string) => {
-    setError(null);
-    const response = await fetch(`${BACKEND_URL}/api/games/${gameId}/join`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...(authHeaders ?? {}) },
-    });
-
-    if (!response.ok) {
-      const data = await response.json();
-      setError(data.message ?? 'Unable to join game');
-      return;
-    }
-
-    const data = await response.json();
-    if (data?.game) {
-      setGames((current) =>
-        current.map((game) => (game.id === data.game.id ? data.game : game))
-      );
-    }
-    setSelectedGameId(gameId);
-  };
-
   const handleLeaveGame = async (gameId: string) => {
     setError(null);
+    const game = games.find((g) => g.id === gameId);
+    if (game && game.ownerId === user?.id) {
+      setError('You are the owner. Delete the game instead of leaving.');
+      return;
+    }
     const response = await fetch(`${BACKEND_URL}/api/games/${gameId}/leave`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...(authHeaders ?? {}) },
@@ -229,6 +255,65 @@ function App() {
     if (selectedGameId === gameId) {
       setSelectedGameId(null);
     }
+  };
+
+  const handleDeleteGame = async (gameId: string) => {
+    if (!window.confirm('Delete this game? This cannot be undone.')) return;
+    setError(null);
+    const response = await fetch(`${BACKEND_URL}/api/games/${gameId}`, {
+      method: 'DELETE',
+      headers: { ...(authHeaders ?? {}) },
+    });
+    if (!response.ok) {
+      const data = await response.json();
+      setError(data.error ?? 'Unable to delete game');
+      return;
+    }
+    setGames((prev) => prev.filter((g) => g.id !== gameId));
+    if (selectedGameId === gameId) setSelectedGameId(null);
+  };
+
+  const handleAddPlayer = async (gameId: string) => {
+    setInviteError(null);
+    if (!inviteUsername.trim()) return;
+    const response = await fetch(`${BACKEND_URL}/api/games/${gameId}/players`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(authHeaders ?? {}) },
+      body: JSON.stringify({ username: inviteUsername.trim() }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      setInviteError(data.error ?? 'Unable to add player');
+      return;
+    }
+    setGames((prev) => prev.map((g) => (g.id === gameId ? data : g)));
+    setInviteUsername('');
+  };
+
+  const handleRemovePlayer = async (gameId: string, playerId: number) => {
+    setInviteError(null);
+    const response = await fetch(`${BACKEND_URL}/api/games/${gameId}/players/${playerId}`, {
+      method: 'DELETE',
+      headers: { ...(authHeaders ?? {}) },
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      setInviteError(data.error ?? 'Unable to remove player');
+      return;
+    }
+    setGames((prev) => prev.map((g) => (g.id === gameId ? data : g)));
+  };
+
+  const handleCopyInviteLink = async (gameId: string) => {
+    const response = await fetch(`${BACKEND_URL}/api/games/${gameId}/invite-token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(authHeaders ?? {}) },
+      body: JSON.stringify({}),
+    });
+    if (!response.ok) return;
+    const data = await response.json();
+    const link = `${window.location.origin}${window.location.pathname}?invite=${data.token}`;
+    await navigator.clipboard.writeText(link);
   };
 
   if (!token) {
@@ -295,10 +380,29 @@ function App() {
   if (selectedGameId && games.length > 0) {
     const selectedGame = games.find((g) => g.id === selectedGameId);
     if (selectedGame) {
+      // Spectator guard: must be a player to enter the game
+      if (!selectedGame.playerIds.includes(user?.id ?? -1)) {
+        return (
+          <div className="min-h-screen bg-slate-100 flex items-center justify-center p-6">
+            <div className="rounded-xl bg-white p-8 shadow text-center space-y-4">
+              <p className="text-lg font-semibold text-slate-800">You are not a member of this game.</p>
+              <p className="text-sm text-slate-500">Ask the game owner to invite you.</p>
+              <button
+                onClick={() => setSelectedGameId(null)}
+                className="rounded bg-slate-800 px-4 py-2 text-sm text-white"
+              >
+                Back to lobby
+              </button>
+            </div>
+          </div>
+        );
+      }
       return (
         <BoardPage
           gameId={selectedGameId}
           game={selectedGame}
+          userId={user?.id ?? 0}
+          token={token ?? ''}
           onBack={() => {
             setSelectedGameId(null);
           }}
@@ -375,11 +479,22 @@ function App() {
                       adv && adv.id !== 'none'
                         ? `${adv.name} L${game.adversaryLevel ?? 0} · Fear: ${lvl?.fearThresholds.join('/') ?? '?'}`
                         : null;
+                    const isOwner = game.ownerId === user?.id;
+                    const isMember = game.playerIds.includes(user?.id ?? -1);
+                    const isManaging = managingGameId === game.id;
                     return (
-                      <div key={game.id} className="rounded border p-3">
+                      <div key={game.id} className="rounded border p-3 space-y-2">
                         <div className="flex items-center justify-between gap-2">
                           <div>
-                            <p className="font-semibold">{game.name}</p>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <p className="font-semibold">{game.name}</p>
+                              {game.outcome === 'win' && (
+                                <span className="text-xs font-semibold text-green-700 bg-green-100 rounded px-2 py-0.5">Victory</span>
+                              )}
+                              {game.outcome === 'loss' && (
+                                <span className="text-xs font-semibold text-red-700 bg-red-100 rounded px-2 py-0.5">Defeat</span>
+                              )}
+                            </div>
                             <p className="text-sm text-slate-500">
                               Phase: {game.currentPhase ?? 'growth'} · Turn {game.turn ?? 1}
                             </p>
@@ -390,8 +505,8 @@ function App() {
                               <p className="text-xs text-slate-400">{adversaryLabel}</p>
                             )}
                           </div>
-                          <div className="flex items-center gap-2">
-                            {game.playerIds.includes(user?.id ?? -1) ? (
+                          <div className="flex items-center gap-2 flex-wrap justify-end">
+                            {isMember && (
                               <>
                                 <button
                                   onClick={() => setSelectedGameId(game.id)}
@@ -399,23 +514,86 @@ function App() {
                                 >
                                   Open
                                 </button>
+                                {!isOwner && (
+                                  <button
+                                    onClick={() => handleLeaveGame(game.id)}
+                                    className="rounded border border-slate-300 px-3 py-2 text-sm text-slate-700"
+                                  >
+                                    Leave
+                                  </button>
+                                )}
+                              </>
+                            )}
+                            {isOwner && (
+                              <>
                                 <button
-                                  onClick={() => handleLeaveGame(game.id)}
-                                  className="rounded border border-slate-300 px-3 py-2 text-sm text-slate-700"
+                                  onClick={() => {
+                                    setManagingGameId(isManaging ? null : game.id);
+                                    setInviteUsername('');
+                                    setInviteError(null);
+                                  }}
+                                  className="rounded border border-slate-300 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
                                 >
-                                  Leave
+                                  {isManaging ? 'Done' : 'Manage'}
+                                </button>
+                                <button
+                                  onClick={() => handleDeleteGame(game.id)}
+                                  className="rounded border border-red-300 px-3 py-2 text-sm text-red-600 hover:bg-red-50"
+                                >
+                                  Delete
                                 </button>
                               </>
-                            ) : (
-                              <button
-                                onClick={() => handleJoinGame(game.id)}
-                                className="rounded bg-slate-800 px-3 py-2 text-sm text-white"
-                              >
-                                Join
-                              </button>
                             )}
                           </div>
                         </div>
+
+                        {/* Manage Players Panel (owner-only) */}
+                        {isOwner && isManaging && (
+                          <div className="border-t pt-2 space-y-2">
+                            <p className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Players</p>
+                            {game.playerIds.map((pid, idx) => {
+                              const uname = game.playerUsernames?.[idx] ?? String(pid);
+                              return (
+                                <div key={pid} className="flex items-center justify-between gap-2">
+                                  <span className="text-sm text-slate-700">{uname}</span>
+                                  {pid !== user?.id && (
+                                    <button
+                                      onClick={() => handleRemovePlayer(game.id, pid)}
+                                      className="text-xs text-red-500 hover:text-red-700"
+                                    >
+                                      Remove
+                                    </button>
+                                  )}
+                                </div>
+                              );
+                            })}
+                            <div className="flex gap-2 pt-1">
+                              <input
+                                value={inviteUsername}
+                                onChange={(e) => setInviteUsername(e.target.value)}
+                                onKeyDown={(e) => e.key === 'Enter' && void handleAddPlayer(game.id)}
+                                placeholder="Username"
+                                className="flex-1 rounded border px-2 py-1 text-sm"
+                              />
+                              <button
+                                onClick={() => void handleAddPlayer(game.id)}
+                                className="rounded bg-slate-800 px-3 py-1 text-sm text-white"
+                              >
+                                Add
+                              </button>
+                              <button
+                                onClick={() => void handleCopyInviteLink(game.id)}
+                                className="rounded border border-slate-300 px-3 py-1 text-sm text-slate-700 hover:bg-slate-50"
+                                title="Copy invite link to clipboard"
+                              >
+                                Copy Link
+                              </button>
+                            </div>
+                            {inviteError && (
+                              <p className="text-xs text-red-600">{inviteError}</p>
+                            )}
+                          </div>
+                        )}
                       </div>
                     );
                   })}

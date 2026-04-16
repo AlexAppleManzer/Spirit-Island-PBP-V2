@@ -86,11 +86,15 @@ type GamestateSnapshot = {
   forgottenMinorPowerCards: ForgottenPowerCard[];
   forgottenMajorPowerCards: ForgottenPowerCard[];
   forgottenUniquePowerCards: ForgottenPowerCard[];
+  outcome: 'win' | 'loss' | null;
 };
 
 interface GamestatePanelProps {
   docRef: React.MutableRefObject<Y.Doc | null>;
   selectedBoardId?: string | null;
+  isOwner: boolean;
+  gameId: string;
+  token: string;
 }
 
 const getSafeNumber = (value: unknown, fallback: number) => {
@@ -601,6 +605,12 @@ const readSnapshot = (doc: Y.Doc): GamestateSnapshot => {
     forgottenMinorPowerCards: parseForgottenPowerCardList(gameMap.get('forgottenMinorPowerCards')),
     forgottenMajorPowerCards: parseForgottenPowerCardList(gameMap.get('forgottenMajorPowerCards')),
     forgottenUniquePowerCards: parseForgottenPowerCardList(gameMap.get('forgottenUniquePowerCards')),
+    outcome: (() => {
+      const raw = gameMap.get('outcome');
+      if (raw === 'win') return 'win';
+      if (raw === 'loss') return 'loss';
+      return null;
+    })(),
   };
 };
 
@@ -643,6 +653,7 @@ const initialSnapshot: GamestateSnapshot = {
   forgottenMinorPowerCards: [],
   forgottenMajorPowerCards: [],
   forgottenUniquePowerCards: [],
+  outcome: null,
 };
 
 const StatPill = ({ label, value }: { label: string; value: number | string }) => (
@@ -762,7 +773,9 @@ const DiscardPileSection = ({
   </div>
 );
 
-const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef, selectedBoardId }) => {
+const BACKEND_URL = 'http://localhost:3001';
+
+const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef, selectedBoardId, isOwner, gameId, token }) => {
   const [snapshot, setSnapshot] = useState<GamestateSnapshot>(initialSnapshot);
   const [showInvaderDiscard, setShowInvaderDiscard] = useState(false);
   const [showEventDiscard, setShowEventDiscard] = useState(false);
@@ -1200,8 +1213,69 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef, selectedBoardId
 
   const eventActionsDisabled = snapshot.phase !== 'event';
 
+  const handleSetOutcome = async (outcome: 'win' | 'loss' | null) => {
+    await fetch(`${BACKEND_URL}/api/games/${gameId}/outcome`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ outcome }),
+    });
+    // Yjs will propagate the update; no need to update local state manually
+  };
+
   return (
     <aside className="h-full min-h-0 space-y-4 overflow-y-scroll rounded-xl bg-white p-4 shadow">
+
+      {/* Outcome banner */}
+      {snapshot.outcome === 'win' && (
+        <section className="rounded-lg border border-green-300 bg-green-50 p-3 text-center space-y-2">
+          <p className="text-xl font-bold text-green-800">VICTORY</p>
+          {isOwner && (
+            <button
+              type="button"
+              onClick={() => void handleSetOutcome(null)}
+              className="text-xs text-green-700 underline hover:text-green-900"
+            >
+              Clear outcome
+            </button>
+          )}
+        </section>
+      )}
+      {snapshot.outcome === 'loss' && (
+        <section className="rounded-lg border border-red-300 bg-red-50 p-3 text-center space-y-2">
+          <p className="text-xl font-bold text-red-800">DEFEAT</p>
+          {isOwner && (
+            <button
+              type="button"
+              onClick={() => void handleSetOutcome(null)}
+              className="text-xs text-red-700 underline hover:text-red-900"
+            >
+              Clear outcome
+            </button>
+          )}
+        </section>
+      )}
+      {snapshot.outcome === null && isOwner && (
+        <section className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-2">
+          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Declare Outcome</p>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => void handleSetOutcome('win')}
+              className="flex-1 rounded bg-green-700 px-3 py-2 text-sm font-medium text-white hover:bg-green-800"
+            >
+              Victory
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleSetOutcome('loss')}
+              className="flex-1 rounded bg-red-700 px-3 py-2 text-sm font-medium text-white hover:bg-red-800"
+            >
+              Defeat
+            </button>
+          </div>
+        </section>
+      )}
+
       <section className="space-y-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
         <div className="grid grid-cols-2 gap-3">
           <StatPill label="Turn" value={snapshot.turn} />
