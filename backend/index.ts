@@ -1543,48 +1543,43 @@ const wss = new WebSocketServer({ server });
 let clientIdCounter = 0;
 
 wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
-  try {
-    const url = req.url || '';
-    const roomName = getRoomNameFromUrl(url);
-    const gameId = getGameIdFromRoomName(roomName);
-    
-    console.debug(`[WS] New connection for game: ${gameId}`);
-    
-    // Assign unique client ID
-    const clientId = clientIdCounter++;
-    const wsClient = ws as unknown as WsLike;
-    wsClient.clientId = clientId;
+  const clientId = clientIdCounter++;
+  const wsClient = ws as unknown as WsLike;
+  wsClient.clientId = clientId;
 
+  const url = req.url || '';
+  const roomName = getRoomNameFromUrl(url);
+  const gameId = getGameIdFromRoomName(roomName);
+
+  console.debug(`[WS] New connection for game: ${gameId}, client ${clientId}`);
+
+  // Buffer messages that arrive before the room is ready
+  const messageQueue: Buffer[] = [];
+  const queueMessage = (msg: Buffer) => messageQueue.push(msg);
+  ws.on('message', queueMessage);
+
+  try {
     const room = await getOrCreateRoomState(roomName);
     room.clients.add(wsClient);
     const ydoc = room.ydoc;
-    
-    // Load existing game state from database if boards map is empty
-    const gameMap = ydoc.getMap('game');
-    let boardsMap = gameMap.get('boards') as Y.Map<any>;
-    
-    if (!boardsMap || boardsMap.size === 0) {
-      await loadGameStateFromDb(gameId, ydoc);
-      boardsMap = gameMap.get('boards') as Y.Map<any>;
-    }
-    
     const awareness = room.awareness;
 
-    ws.on('message', (message: any) => {
+    const handleMessage = (message: any) => {
       try {
         const decoder = decoding.createDecoder(message);
         const messageType = decoding.readVarUint(decoder);
 
         switch (messageType) {
-          case 0: // syncProtocol.messageSync
+          case 0: { // syncProtocol.messageSync
             const responseEncoder = encoding.createEncoder();
             encoding.writeVarUint(responseEncoder, 0); // messageSync
             syncProtocol.readSyncMessage(decoder, responseEncoder, ydoc, wsClient);
             const response = encoding.toUint8Array(responseEncoder);
-            if (response.length > 1 && ws.readyState === 1) { // > 1 because we wrote the message type
+            if (response.length > 1 && ws.readyState === 1) {
               ws.send(response);
             }
             break;
+          }
           case 1: // awarenessProtocol.messageAwareness
             awarenessProtocol.applyAwarenessUpdate(
               awareness,
@@ -1598,7 +1593,24 @@ wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
       } catch (error) {
         console.error(`[WS] Error handling message from client ${clientId}:`, error);
       }
-    });
+    };
+
+    // Switch from queuing to live handling
+    ws.off('message', queueMessage);
+    ws.on('message', handleMessage);
+
+    // Send sync step 1 so the client can send us any state we're missing
+    if (ws.readyState === 1) {
+      const syncEncoder = encoding.createEncoder();
+      encoding.writeVarUint(syncEncoder, 0); // messageSync
+      syncProtocol.writeSyncStep1(syncEncoder, ydoc);
+      ws.send(encoding.toUint8Array(syncEncoder));
+    }
+
+    // Flush queued messages
+    for (const msg of messageQueue) {
+      handleMessage(msg);
+    }
 
     ws.on('close', () => {
       console.log(`[WS] Client ${clientId} disconnected`);
@@ -1614,6 +1626,7 @@ wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
     console.log(`[WS] Connection established for game ${gameId}, client ${clientId}`);
   } catch (error) {
     console.error(`[WS] Error in connection handler:`, error);
+    ws.off('message', queueMessage);
     ws.close();
   }
 });
