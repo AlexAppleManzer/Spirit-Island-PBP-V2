@@ -1,4 +1,5 @@
 import { type DeckCardDefinition } from './deckCard';
+import { shuffleCards } from './deckUtils';
 
 export type BlightCardDefinition = DeckCardDefinition & {
   blightPerPlayer: number;
@@ -191,20 +192,6 @@ export const BLIGHT_CARDS: BlightCardDefinition[] = [
     "healthy": true
   }
 ];
-
-const shuffleCards = <T,>(cards: T[]): T[] => {
-  const shuffled = [...cards];
-  for (let index = shuffled.length - 1; index > 0; index -= 1) {
-    const swapIndex = Math.floor(Math.random() * (index + 1));
-    const current = shuffled[index];
-    const swap = shuffled[swapIndex];
-    if (current !== undefined && swap !== undefined) {
-      shuffled[index] = swap;
-      shuffled[swapIndex] = current;
-    }
-  }
-  return shuffled;
-};
 
 export const createShuffledBlightCardDeck = () => {
   return shuffleCards(BLIGHT_CARDS);

@@ -25,7 +25,7 @@ type ForgottenPowerCard = {
   sourceBoardId?: string;
 };
 
-const BACKEND_URL = 'http://localhost:3001';
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:3001';
 const LAYOUT_MODEL_SIZE = 440;
 const TOTAL_PRESENCE_SLOTS = 13;
 const SPIRIT_SECTION_MIN_PERCENT = 30;
@@ -426,15 +426,19 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
 
       setSpiritStates(nextStates);
       setEmptyBoardIds(nextEmptyBoardIds);
-      if (!selectedBoardId || !nextStates.some((state) => state.boardId === selectedBoardId)) {
-        selectBoard(nextStates[0]?.boardId ?? null);
-      }
     };
 
     syncFromDoc();
     doc.on('update', syncFromDoc);
     return () => doc.off('update', syncFromDoc);
-  }, [docRef, selectedBoardId]);
+  }, [docRef]);
+
+  // Keep selection valid: if the selected board disappears, fall back to the first board
+  useEffect(() => {
+    if (!selectedBoardId || !spiritStates.some((s) => s.boardId === selectedBoardId)) {
+      selectBoard(spiritStates[0]?.boardId ?? null);
+    }
+  }, [spiritStates, selectedBoardId]);
 
   // Fetch presence layouts from backend when selected spirit changes
   const selectedSpiritIdForLayout = useMemo(() => {

@@ -1,4 +1,5 @@
 import { type DeckCardDefinition } from './deckCard';
+import { shuffleCards } from './deckUtils';
 
 export type FearCardDefinition = DeckCardDefinition & {
   /** Russia L5+: this slot holds an invader card that auto-places in Build when revealed */
@@ -309,20 +310,6 @@ export const FEAR_CARDS: FearCardDefinition[] = [
     "backUrl": "https://steamusercontent-a.akamaihd.net/ugc/2050875404517258684/87EDE083E71BACAF74032674A28DCBE65DAFB171/"
   }
 ];
-
-const shuffleCards = <T,>(cards: T[]): T[] => {
-  const shuffled = [...cards];
-  for (let index = shuffled.length - 1; index > 0; index -= 1) {
-    const swapIndex = Math.floor(Math.random() * (index + 1));
-    const current = shuffled[index];
-    const swap = shuffled[swapIndex];
-    if (current !== undefined && swap !== undefined) {
-      shuffled[index] = swap;
-      shuffled[swapIndex] = current;
-    }
-  }
-  return shuffled;
-};
 
 export const createShuffledFearCardDeck = () => {
   return shuffleCards(FEAR_CARDS);

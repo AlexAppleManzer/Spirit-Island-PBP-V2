@@ -1,4 +1,5 @@
 import { type PowerCardDefinition } from './deckCard';
+import { shuffleCards } from './deckUtils';
 
 export const MAJOR_POWER_CARDS: PowerCardDefinition[] = [
   {
@@ -2587,20 +2588,6 @@ export const MAJOR_POWER_CARDS: PowerCardDefinition[] = [
     ]
   }
 ];
-
-const shuffleCards = <T,>(cards: T[]): T[] => {
-  const shuffled = [...cards];
-  for (let index = shuffled.length - 1; index > 0; index -= 1) {
-    const swapIndex = Math.floor(Math.random() * (index + 1));
-    const current = shuffled[index];
-    const swap = shuffled[swapIndex];
-    if (current !== undefined && swap !== undefined) {
-      shuffled[index] = swap;
-      shuffled[swapIndex] = current;
-    }
-  }
-  return shuffled;
-};
 
 export const createShuffledMAJOR_POWER_CARDSDeck = () => {
   return shuffleCards(MAJOR_POWER_CARDS);

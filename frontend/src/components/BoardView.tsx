@@ -1,4 +1,4 @@
-import React, { useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { Stage, Layer, Image, Line, Text, Group, Rect, Circle } from 'react-konva';
 import useImage from 'use-image';
 import * as Y from 'yjs';
@@ -196,10 +196,6 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
   });
   const [boardImage] = useImage('/board.png');
   
-  // Debug: log image loading
-  React.useEffect(() => {
-    console.log('BoardImage loaded:', !!boardImage);
-  }, [boardImage]);
   const [explorerImage] = useImage('/InvaderExplorer.png');
   const [townImage] = useImage('/InvaderTown.png');
   const [cityImage] = useImage('/InvaderCity.png');
@@ -316,7 +312,7 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
     y: (worldY - stageBounds.originY) * zoom,
   });
 
-  const centerViewOnBoards = () => {
+  const centerViewOnBoards = useCallback(() => {
     if (!canvasRef.current || boards.size === 0) return;
 
     const worldCenterX = (stageBounds.minX + stageBounds.maxRight) / 2;
@@ -335,14 +331,14 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
       Math.max(0, stageCenterY - viewportSize.height / 2),
       maxScrollTop
     );
-  };
+  }, [boards.size, stageBounds, zoom, canvasRef, viewportSize]);
 
   useEffect(() => {
     if (boards.size > 0 && !didAutoCenterRef.current) {
       centerViewOnBoards();
       didAutoCenterRef.current = true;
     }
-  }, [boards.size, stageBounds, zoom]);
+  }, [boards.size, stageBounds, zoom, centerViewOnBoards]);
 
   const updateZoomAtPointer = (nextZoom: number, clientX?: number, clientY?: number) => {
     if (!canvasRef.current) return;
@@ -429,14 +425,10 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
   useEffect(() => {
     const doc = docRef.current;
     if (!doc) {
-      console.log('No doc yet in useEffect');
       return;
     }
 
-    console.log('BoardView useEffect - docRef is set');
-
     const gameMap = doc.getMap('game');
-    console.log('BoardView initial game map ready');
 
     const updateBoards = () => {
       const updatedBoards = new Map<string, any>();
@@ -452,7 +444,6 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
           }
         });
       }
-      console.log('Updated boards:', Array.from(updatedBoards.keys()), 'count:', updatedBoards.size);
       setBoards(updatedBoards);
       setSpiritColors(nextColors);
     };
@@ -461,7 +452,6 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
     updateBoards();
 
     const updateHandler = () => {
-      console.log('BoardView: game map changed');
       updateBoards();
     };
     gameMap.observeDeep(updateHandler);
@@ -492,10 +482,7 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
     const hasPresenceSlotIndex = Number.isInteger(spiritSlotIndex) && spiritSlotIndex >= 0;
     const activePieceType = draggedPieceType ?? (isBlightFromCard ? 'blight' : isPresenceFromPanel ? 'presence' : isPresenceDestroyedFromPanel ? 'presence' : null);
 
-    console.log('DROP EVENT - activePieceType:', activePieceType);
-
     if (!activePieceType || !landBounds || !canvasRef.current || draggingPiece) {
-      console.log('Early exit - missing data');
       return;
     }
 
@@ -503,8 +490,6 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
     const dropStageX = e.clientX - rect.left + canvasRef.current.scrollLeft;
     const dropStageY = e.clientY - rect.top + canvasRef.current.scrollTop;
     const { x: dropX, y: dropY } = toWorldPoint(dropStageX, dropStageY);
-
-    console.log('Dropped at:', dropX, dropY);
 
     const doc = docRef.current;
     if (!doc) return;
@@ -563,8 +548,6 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
 
         for (const [landId, bounds] of Object.entries(landBounds)) {
           if (isPointInPolygon({ x: localX, y: localY }, (bounds as any).polygon)) {
-            console.log('Dropped on board:', boardId, 'land:', landId);
-
             const landsMap = boardData.get('lands') as Y.Map<any>;
             const piecesArray = landsMap.get(landId) as Y.Array<any>;
 
@@ -948,8 +931,6 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
 
   const handleBoardMouseDown = (e: React.MouseEvent, boardId: string) => {
     e.preventDefault();
-    console.log('Board mouse down on board:', boardId);
-    
     const doc = docRef.current;
     if (!doc) return;
 
@@ -964,8 +945,6 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
 
     if (!canvasRef.current) return;
     const rect = canvasRef.current.getBoundingClientRect();
-
-    console.log('Starting drag - boardX:', boardX, 'boardY:', boardY, 'e.clientX:', e.clientX, 'rect.left:', rect.left);
 
     setDraggingBoardId(boardId);
     setDragPreviewPos({ x: boardX, y: boardY });
@@ -982,8 +961,6 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
   useEffect(() => {
     if (!draggingBoardId || !canvasRef.current || !manageBoardsMode) return;
 
-    console.log('Drag effect active for board:', draggingBoardId);
-
     const handleMouseMove = (e: MouseEvent) => {
       const rect = canvasRef.current!.getBoundingClientRect();
       const pointerStageX = e.clientX - rect.left + canvasRef.current!.scrollLeft;
@@ -991,8 +968,6 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
       const pointerWorld = toWorldPoint(pointerStageX, pointerStageY);
       const newX = pointerWorld.x - dragOffset.x;
       const newY = pointerWorld.y - dragOffset.y;
-
-      console.log('Moving board - newX:', newX, 'newY:', newY);
 
       const doc = docRef.current;
       if (!doc) return;
@@ -1010,7 +985,6 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
     };
 
     const handleMouseUp = () => {
-      console.log('Mouse up - stopping drag');
       setDragPreviewPos(null);
       setDraggingBoardId(null);
     };
@@ -1233,38 +1207,32 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
     };
   }, [pendingPiecePointer, draggingPiece, boards, stageBounds.originX, stageBounds.originY]);
 
-  const getPieceImage = (type: string) => {
-    const imageMap: Record<string, any> = {
-      explorer: explorerImage,
-      town: townImage,
-      city: cityImage,
-      dahan: dahanImage,
-      badlands: badlandsImage,
-      beast: beastsImage,
-      deeps: deepsImage,
-      disease: diseaseImage,
-      quake: quakeImage,
-      vitality: vitalityImage,
-      wilds: wildsImage,
-      strife: strifeTokenImage,
-      blight: blightImage,
-    };
-    return imageMap[type];
-  };
+  const pieceImageMap = useMemo<Record<string, any>>(() => ({
+    explorer: explorerImage,
+    town: townImage,
+    city: cityImage,
+    dahan: dahanImage,
+    badlands: badlandsImage,
+    beast: beastsImage,
+    deeps: deepsImage,
+    disease: diseaseImage,
+    quake: quakeImage,
+    vitality: vitalityImage,
+    wilds: wildsImage,
+    strife: strifeTokenImage,
+    blight: blightImage,
+  }), [explorerImage, townImage, cityImage, dahanImage, badlandsImage, beastsImage, deepsImage, diseaseImage, quakeImage, vitalityImage, wildsImage, strifeTokenImage, blightImage]);
+
+  const getPieceImage = (type: string) => pieceImageMap[type];
 
   const createBoard = () => {
-    console.log('createBoard called');
     const doc = docRef.current;
     if (!doc) {
-      console.log('No doc');
       return;
     }
 
     const gameMap = doc.getMap('game');
-    console.log('gameMap:', gameMap);
-    
     const boardsMap = gameMap.get('boards') as Y.Map<any>;
-    console.log('boardsMap before:', boardsMap);
     
     if (!boardsMap) {
       console.warn('Boards map is not ready yet; wait for sync before adding boards');
@@ -1273,7 +1241,6 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
 
     // Find next board ID
     const existingIds = new Set(Array.from(boardsMap.keys()));
-    console.log('Existing board IDs:', Array.from(existingIds));
     
     const letters = 'ABCDEFGHIJ'.split('');
     let newBoardId = '';
@@ -1285,12 +1252,9 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
     }
 
     if (!newBoardId) {
-      console.log('All board slots are full (A-J)');
       alert('Cannot add more boards - maximum 10 boards per game');
       return;
     }
-
-    console.log('Creating board:', newBoardId);
 
     // Create new board
     const newBoard = new Y.Map();
@@ -1306,7 +1270,6 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
     newBoard.set('lands', lands);
 
     boardsMap.set(newBoardId, newBoard);
-    console.log('Board created. Total boards:', boardsMap.size);
   };
 
   return (
@@ -1369,7 +1332,6 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
                     const boardsMap = gameMap.get('boards') as Y.Map<any>;
                     boardsMap.delete(selectedBoardId);
                     setSelectedBoardId(null);
-                    console.log('Board deleted:', selectedBoardId);
                   }
                 }}
                 title="Delete (X)"
@@ -1446,7 +1408,6 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
           const { x: clickX, y: clickY } = toWorldPoint(clickStageX, clickStageY);
 
           // Only allow board management when in manage mode
-          console.log('Canvas mouse down at:', e.clientX, e.clientY);
           if (!manageBoardsMode) {
             // Reserve plain left-click/drag for piece interactions.
             return;
@@ -1470,7 +1431,6 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
             
             // Only treat clicks on actual island polygons as board clicks.
             if (landBounds && isPointOnIsland(localPoint, landBounds)) {
-              console.log('Clicked board:', boardId);
               setSelectedBoardId(boardId);
 
               handleBoardMouseDown(e, boardId);
@@ -1513,8 +1473,6 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
               const boardStagePos = toStagePoint(boardX, boardY);
               const rotation = boardData.get('rotation') || 0;
               const landsMap = boardData.get('lands') as Y.Map<any>;
-              
-              console.log(`Rendering board ${boardId} at (${boardX}, ${boardY})`);
 
               return (
                 <Group

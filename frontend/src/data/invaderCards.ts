@@ -1,23 +1,11 @@
+import { shuffleCards } from './deckUtils';
+
 export type InvaderCardDefinition = {
   id: string;
   stage: 1 | 2 | 3;
   name: string;
   faceUrl: string;
   backUrl: string;
-};
-
-const shuffleCards = (cards: InvaderCardDefinition[]): InvaderCardDefinition[] => {
-  const shuffled = [...cards];
-  for (let index = shuffled.length - 1; index > 0; index -= 1) {
-    const swapIndex = Math.floor(Math.random() * (index + 1));
-    const current = shuffled[index];
-    const swap = shuffled[swapIndex];
-    if (current && swap) {
-      shuffled[index] = swap;
-      shuffled[swapIndex] = current;
-    }
-  }
-  return shuffled;
 };
 
 export const INVADER_CARDS: InvaderCardDefinition[] = [

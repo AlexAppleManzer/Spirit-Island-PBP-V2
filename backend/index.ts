@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
+import rateLimit from 'express-rate-limit';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import { Pool } from 'pg';
@@ -44,8 +45,9 @@ type GameDto = {
 };
 
 // Config
-const PORT = parseInt(process.env.PORT || '3001');
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-key';
+const PORT = parseInt(process.env.PORT || '3001', 10);
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) throw new Error('JWT_SECRET env var is required');
 const DATABASE_URL = process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/pbpv2';
 
 // Database pool
@@ -62,12 +64,21 @@ const app = express();
 app.use(cors({ origin: process.env.FRONTEND_URL || 'http://localhost:5173' }));
 app.use(express.json());
 
+const authRateLimit = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests, please try again later' },
+});
+
 ensureDatabaseSchema().catch((error) => {
   console.error('Schema initialization failed:', error);
 });
 
 // In-memory game documents (Y.Doc per game)
 const gameDocs = new Map<string, Y.Doc>();
+const gameDocsPending = new Map<string, Promise<Y.Doc>>();
 
 type WsLike = {
   readyState: number;
@@ -345,7 +356,7 @@ const getNextBoardId = (existingBoardIds: string[]) => {
 // Helper to save game state to database
 const saveGameStateToDb = async (gameId: string, ydoc: Y.Doc) => {
   try {
-    const gameIdNum = parseInt(gameId);
+    const gameIdNum = parseInt(gameId, 10);
     if (isNaN(gameIdNum)) {
       console.debug(`[DB] Skipping save for non-numeric game ID: ${gameId}`);
       return;
@@ -416,6 +427,7 @@ const saveGameStateToDb = async (gameId: string, ydoc: Y.Doc) => {
         state.boards[boardId] = {
           boardId: boardData.get('boardId'),
           playerId: boardData.get('playerId'),
+          positionInitialized: boardData.get('positionInitialized') === true,
           x: boardData.get('x') || 0,
           y: boardData.get('y') || 0,
           rotation: boardData.get('rotation') || 0,
@@ -449,7 +461,10 @@ const saveGameStateToDb = async (gameId: string, ydoc: Y.Doc) => {
     }
 
     await pool.query(
-      'INSERT INTO game_snapshots (game_id, board_state) VALUES ($1, $2)',
+      `INSERT INTO game_snapshots (game_id, board_state, timestamp)
+       VALUES ($1, $2, NOW())
+       ON CONFLICT (game_id) DO UPDATE
+         SET board_state = EXCLUDED.board_state, timestamp = EXCLUDED.timestamp`,
       [gameIdNum, JSON.stringify(state)]
     );
   } catch (err) {
@@ -460,23 +475,19 @@ const saveGameStateToDb = async (gameId: string, ydoc: Y.Doc) => {
 // Helper to load game state from database
 const loadGameStateFromDb = async (gameId: string, ydoc: Y.Doc) => {
   try {
-    const gameIdNum = parseInt(gameId);
+    const gameIdNum = parseInt(gameId, 10);
     if (isNaN(gameIdNum)) {
       console.log(`[DB] Skipping load for non-numeric game ID: ${gameId}`);
       return;
     }
 
-    console.log(`[DB] Attempting to load state for game ${gameIdNum}`);
     const result = await pool.query(
       'SELECT board_state FROM game_snapshots WHERE game_id = $1 ORDER BY timestamp DESC LIMIT 1',
       [gameIdNum]
     );
-    
-    console.log(`[DB] Query returned ${result.rows.length} rows`);
-    
+
     if (result.rows.length > 0) {
       const state = result.rows[0].board_state;
-      console.log(`[DB] Loaded state:`, JSON.stringify(state).substring(0, 200));
       
       if (state && typeof state === 'object') {
         const gameMap = ydoc.getMap('game');
@@ -537,10 +548,11 @@ const loadGameStateFromDb = async (gameId: string, ydoc: Y.Doc) => {
             playerBoard.set('boardId', boardData.boardId);
             playerBoard.set('playerId', boardData.playerId);
             
-            // Give boards on-screen default positions if they were at (0,0)
-            const x = (boardData.x === 0 && boardData.y === 0) ? 300 : (boardData.x || 0);
-            const y = (boardData.x === 0 && boardData.y === 0) ? 200 : (boardData.y || 0);
-            
+            const positionInitialized = boardData.positionInitialized === true;
+            const x = positionInitialized ? (boardData.x || 0) : 300;
+            const y = positionInitialized ? (boardData.y || 0) : 200;
+
+            playerBoard.set('positionInitialized', true);
             playerBoard.set('x', x);
             playerBoard.set('y', y);
             playerBoard.set('rotation', boardData.rotation || 0);
@@ -607,20 +619,25 @@ const loadGameStateFromDb = async (gameId: string, ydoc: Y.Doc) => {
   }
 };
 
-const getGameDoc = async (gameId: string) => {
-  if (!gameDocs.has(gameId)) {
+const getGameDoc = async (gameId: string): Promise<Y.Doc> => {
+  const existing = gameDocs.get(gameId);
+  if (existing) return existing;
+
+  const inFlight = gameDocsPending.get(gameId);
+  if (inFlight) return inFlight;
+
+  const promise = (async () => {
     const ydoc = new Y.Doc();
-    gameDocs.set(gameId, ydoc);
-    
+
     // Initialize game structure
     const gameMap = ydoc.getMap('game');
     const initialPlayerCount = await getInitialPlayerCountFromDb(gameId);
     ensureGameDefaults(gameMap, initialPlayerCount);
-    
+
     // Load state from database
     await loadGameStateFromDb(gameId, ydoc);
     ensureGameDefaults(gameMap, initialPlayerCount);
-    
+
     // Save to database on updates (debounced)
     let saveTimeout: any = null;
     ydoc.on('update', () => {
@@ -629,8 +646,14 @@ const getGameDoc = async (gameId: string) => {
         saveGameStateToDb(gameId, ydoc);
       }, 1000);
     });
-  }
-  return gameDocs.get(gameId)!;
+
+    gameDocs.set(gameId, ydoc);
+    gameDocsPending.delete(gameId);
+    return ydoc;
+  })();
+
+  gameDocsPending.set(gameId, promise);
+  return promise;
 };
 
 const getRoomNameFromUrl = (url: string) => {
@@ -704,6 +727,16 @@ const cleanupRoomStateIfEmpty = (roomName: string) => {
   room.ydoc.off('update', room.onDocUpdate);
   room.awareness.off('update', room.onAwarenessUpdate);
   roomStates.delete(roomName);
+
+  // Evict from gameDocs if no other room still references this game
+  const gameId = getGameIdFromRoomName(roomName);
+  const stillReferenced = [...roomStates.keys()].some(
+    (name) => getGameIdFromRoomName(name) === gameId
+  );
+  if (!stillReferenced) {
+    gameDocs.delete(gameId);
+    gameDocsPending.delete(gameId);
+  }
 };
 
 // Helper to initialize a player's board
@@ -715,6 +748,7 @@ const initializePlayerBoard = (ydoc: Y.Doc, playerId: number, boardId: string) =
     const playerBoard = new Y.Map();
     playerBoard.set('boardId', boardId);
     playerBoard.set('playerId', playerId);
+    playerBoard.set('positionInitialized', true);
     playerBoard.set('x', Math.random() * 200); // Random initial position
     playerBoard.set('y', Math.random() * 200);
     
@@ -752,11 +786,20 @@ const verifyToken = (req: Request, res: Response, next: any) => {
 };
 
 // Auth endpoints
-app.post('/api/auth/register', async (req: Request, res: Response) => {
+app.post('/api/auth/register', authRateLimit, async (req: Request, res: Response) => {
   try {
     const { username, email, password } = req.body;
     if (!username || !email || !password) {
       return res.status(400).json({ error: 'Missing fields' });
+    }
+    if (typeof username !== 'string' || username.length > 50) {
+      return res.status(400).json({ error: 'Username must be 50 characters or fewer' });
+    }
+    if (typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ error: 'Invalid email address' });
+    }
+    if (typeof password !== 'string' || password.length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters' });
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
@@ -767,11 +810,15 @@ app.post('/api/auth/register', async (req: Request, res: Response) => {
 
     res.status(201).json({ user: result.rows[0] });
   } catch (err: any) {
-    res.status(400).json({ error: err.message });
+    if (err?.code === '23505') {
+      return res.status(409).json({ error: 'Username or email already in use' });
+    }
+    console.error('Register error:', err);
+    res.status(500).json({ error: 'Internal error' });
   }
 });
 
-app.post('/api/auth/login', async (req: Request, res: Response) => {
+app.post('/api/auth/login', authRateLimit, async (req: Request, res: Response) => {
   try {
     const { email, password } = req.body;
     const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
@@ -784,7 +831,8 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
     const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: '7d' });
     res.json({ token, user: { id: user.id, username: user.username, email: user.email } });
   } catch (err: any) {
-    res.status(400).json({ error: err.message });
+    console.error('Login error:', err);
+    res.status(500).json({ error: 'Internal error' });
   }
 });
 
@@ -829,6 +877,12 @@ app.post('/api/games', verifyToken, async (req: Request, res: Response) => {
         ? discordWebhookUrl.trim()
         : null;
 
+    const isValidDiscordWebhook = (url: string) =>
+      /^https:\/\/discord\.com\/api\/webhooks\/\d+\/[\w-]+$/.test(url);
+    if (normalizedWebhook && !isValidDiscordWebhook(normalizedWebhook)) {
+      return res.status(400).json({ error: 'Invalid Discord webhook URL' });
+    }
+
     // Validate and normalize adversary selection
     const selectedAdversaryId =
       typeof adversaryId === 'string' && getAdversary(adversaryId) ? adversaryId : 'none';
@@ -850,7 +904,8 @@ app.post('/api/games', verifyToken, async (req: Request, res: Response) => {
 
     res.status(201).json(mapGameRowToDto(createdGame));
   } catch (err: any) {
-    res.status(400).json({ error: err.message });
+    console.error('Create game error:', err);
+    res.status(500).json({ error: 'Internal error' });
   }
 });
 
@@ -1172,44 +1227,28 @@ wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
     let boardsMap = gameMap.get('boards') as Y.Map<any>;
     
     if (!boardsMap || boardsMap.size === 0) {
-      console.log(`[WS] Loading game state from database for game ${gameId}`);
       await loadGameStateFromDb(gameId, ydoc);
-      // Get the boards map again after loading
       boardsMap = gameMap.get('boards') as Y.Map<any>;
-      console.log(`[WS] After loading: boards map size = ${boardsMap?.size || 0}`);
-      
-      // Debug: print actual state
-      const stateUpdate = Y.encodeStateAsUpdate(ydoc);
-      console.log(`[WS] Encoded state size: ${stateUpdate.length} bytes`);
     }
     
     const awareness = room.awareness;
 
     ws.on('message', (message: any) => {
       try {
-        console.log(`[WS] Client ${clientId} received message of size ${message.length}`);
         const decoder = decoding.createDecoder(message);
         const messageType = decoding.readVarUint(decoder);
-        console.log(`[WS] Message type: ${messageType}`);
 
         switch (messageType) {
           case 0: // syncProtocol.messageSync
-            console.log(`[WS] Processing sync message from client ${clientId}`);
             const responseEncoder = encoding.createEncoder();
             encoding.writeVarUint(responseEncoder, 0); // messageSync
-            
-            // Let syncProtocol handle the sync - this modifies the encoder with the response
             syncProtocol.readSyncMessage(decoder, responseEncoder, ydoc, wsClient);
-            
-            // Send response if there's anything to send
             const response = encoding.toUint8Array(responseEncoder);
-            console.log(`[WS] Sending sync response of size ${response.length}`);
             if (response.length > 1 && ws.readyState === 1) { // > 1 because we wrote the message type
               ws.send(response);
             }
             break;
           case 1: // awarenessProtocol.messageAwareness
-            console.log(`[WS] Processing awareness update from client ${clientId}`);
             awarenessProtocol.applyAwarenessUpdate(
               awareness,
               decoding.readVarUint8Array(decoder),

@@ -1,4 +1,5 @@
 import { type DeckCardDefinition } from './deckCard';
+import { shuffleCards } from './deckUtils';
 
 export type EventCardDefinition = DeckCardDefinition & {
   /** If true, when this card is revealed a "Return under top 3" button appears instead of discarding */
@@ -382,20 +383,6 @@ export const EVENT_CARDS: EventCardDefinition[] = [
     "backUrl": "https://steamusercontent-a.akamaihd.net/ugc/2050875404517238966/02BD15E4CB64460CAEAD4F2C0DB7ABADEB0A8C0A/"
   }
 ];
-
-const shuffleCards = <T,>(cards: T[]): T[] => {
-  const shuffled = [...cards];
-  for (let index = shuffled.length - 1; index > 0; index -= 1) {
-    const swapIndex = Math.floor(Math.random() * (index + 1));
-    const current = shuffled[index];
-    const swap = shuffled[swapIndex];
-    if (current !== undefined && swap !== undefined) {
-      shuffled[index] = swap;
-      shuffled[swapIndex] = current;
-    }
-  }
-  return shuffled;
-};
 
 export const createShuffledEventCardDeck = (adversaryId?: string, adversaryLevel?: number) => {
   const deck: EventCardDefinition[] = shuffleCards(EVENT_CARDS);

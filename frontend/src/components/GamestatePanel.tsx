@@ -830,7 +830,6 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef, selectedBoardId
 
     doc.transact(() => {
       const gameMap = doc.getMap('game') as Y.Map<unknown>;
-      ensureGamestateDefaults(doc);
       mutator(doc, gameMap);
     });
   };
