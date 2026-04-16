@@ -650,9 +650,8 @@ const getGameDoc = async (gameId: string): Promise<Y.Doc> => {
     // Initialize game structure
     const gameMap = ydoc.getMap('game');
     const initialPlayerCount = await getInitialPlayerCountFromDb(gameId);
-    ensureGameDefaults(gameMap, initialPlayerCount);
 
-    // Load state from database
+    // Load state from database first, then fill in any missing defaults
     await loadGameStateFromDb(gameId, ydoc);
     ensureGameDefaults(gameMap, initialPlayerCount);
 
