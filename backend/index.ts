@@ -59,6 +59,7 @@ const ensureDatabaseSchema = async () => {
   await pool.query('ALTER TABLE games ADD COLUMN IF NOT EXISTS name VARCHAR(120)');
   await pool.query("ALTER TABLE games ADD COLUMN IF NOT EXISTS adversary_id VARCHAR(80) DEFAULT 'none'");
   await pool.query('ALTER TABLE games ADD COLUMN IF NOT EXISTS adversary_level SMALLINT DEFAULT 0');
+  await pool.query('ALTER TABLE game_snapshots ADD COLUMN IF NOT EXISTS yjs_state BYTEA');
 };
 
 // Express setup
@@ -478,12 +479,13 @@ const saveGameStateToDb = async (gameId: string, ydoc: Y.Doc) => {
       });
     }
 
+    const yjsState = Buffer.from(Y.encodeStateAsUpdate(ydoc));
     await pool.query(
-      `INSERT INTO game_snapshots (game_id, board_state, timestamp)
-       VALUES ($1, $2, NOW())
+      `INSERT INTO game_snapshots (game_id, board_state, yjs_state, timestamp)
+       VALUES ($1, $2, $3, NOW())
        ON CONFLICT (game_id) DO UPDATE
-         SET board_state = EXCLUDED.board_state, timestamp = EXCLUDED.timestamp`,
-      [gameIdNum, JSON.stringify(state)]
+         SET board_state = EXCLUDED.board_state, yjs_state = EXCLUDED.yjs_state, timestamp = EXCLUDED.timestamp`,
+      [gameIdNum, JSON.stringify(state), yjsState]
     );
   } catch (err) {
     console.error('Error saving game state:', err);
@@ -500,11 +502,19 @@ const loadGameStateFromDb = async (gameId: string, ydoc: Y.Doc) => {
     }
 
     const result = await pool.query(
-      'SELECT board_state FROM game_snapshots WHERE game_id = $1 ORDER BY timestamp DESC LIMIT 1',
+      'SELECT board_state, yjs_state FROM game_snapshots WHERE game_id = $1 ORDER BY timestamp DESC LIMIT 1',
       [gameIdNum]
     );
 
     if (result.rows.length > 0) {
+      // Prefer binary Y.js state — it's a complete, lossless snapshot
+      if (result.rows[0].yjs_state) {
+        console.log(`[DB] Loading binary Y.js state for game ${gameIdNum}`);
+        Y.applyUpdate(ydoc, result.rows[0].yjs_state);
+        console.log(`[DB] Binary state applied for game ${gameIdNum}`);
+        return;
+      }
+
       const state = result.rows[0].board_state;
       
       if (state && typeof state === 'object') {
@@ -751,6 +761,10 @@ const cleanupRoomStateIfEmpty = (roomName: string) => {
     (name) => getGameIdFromRoomName(name) === gameId
   );
   if (!stillReferenced) {
+    // Flush any pending debounced save immediately before evicting
+    saveGameStateToDb(gameId, room.ydoc).catch((err) =>
+      console.error(`[DB] Final save failed for game ${gameId}:`, err)
+    );
     gameDocs.delete(gameId);
     gameDocsPending.delete(gameId);
   }
