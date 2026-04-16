@@ -136,7 +136,7 @@ function App() {
 
     if (!response.ok) {
       const data = await response.json();
-      setError(data.message ?? 'Authentication failed');
+      setError(data.error ?? data.message ?? 'Authentication failed');
       return;
     }
 

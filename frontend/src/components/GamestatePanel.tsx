@@ -1447,7 +1447,23 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef, selectedBoardId
               className="flex cursor-grab flex-col items-center active:cursor-grabbing"
             >
               <img src="/Blight.png" alt="Blight" style={{ width: 52, height: 52, pointerEvents: 'none' }} />
-              <span className="mt-1 min-w-9 rounded-full border border-slate-900 bg-amber-100 px-2 py-0.5 text-center text-sm font-extrabold leading-none text-slate-900 shadow-sm">
+              <span
+                style={{
+                  marginTop: 4,
+                  minWidth: 36,
+                  borderRadius: 9999,
+                  border: '2px solid white',
+                  background: '#0f172a',
+                  padding: '2px 8px',
+                  textAlign: 'center',
+                  fontSize: 16,
+                  fontWeight: 900,
+                  lineHeight: 1.4,
+                  color: 'white',
+                  boxShadow: '0 2px 6px rgba(0,0,0,0.6)',
+                  display: 'block',
+                }}
+              >
                 {snapshot.blightCount}
               </span>
             </div>

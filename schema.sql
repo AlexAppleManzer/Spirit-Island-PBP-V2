@@ -23,7 +23,7 @@ CREATE TABLE games (
 -- Game snapshots
 CREATE TABLE game_snapshots (
   id SERIAL PRIMARY KEY,
-  game_id INTEGER REFERENCES games(id),
+  game_id INTEGER UNIQUE REFERENCES games(id),
   board_state JSONB,
   timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
