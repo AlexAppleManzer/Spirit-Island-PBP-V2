@@ -35,6 +35,7 @@ interface BoardPageProps {
 
 const BoardPage: React.FC<BoardPageProps> = ({ gameId, game, userId, token, onBack }) => {
   const [wsConnected, setWsConnected] = useState(false);
+  const [docReady, setDocReady] = useState(false);
   const [error] = useState<string | null>(null);
   const [subpage, setSubpage] = useState<'board' | 'spirit' | 'invader-setup' | 'event-setup'>('board');
   const [boardToolbarState, setBoardToolbarState] = useState({ manageBoardsMode: false, zoomPercent: 100 });
@@ -128,14 +129,15 @@ const BoardPage: React.FC<BoardPageProps> = ({ gameId, game, userId, token, onBa
     if (providerRef.current !== null) {
       console.log('[BoardPage] Provider already exists, skipping recreation');
       setWsConnected(providerRef.current.wsconnected);
+      setDocReady(true);
 
       const statusHandler = (event: any) => {
         console.log('[BoardPage] WebSocket status:', event.status);
         setWsConnected(providerRef.current!.wsconnected);
       };
-      
+
       providerRef.current.on('status', statusHandler);
-      
+
       return () => {
         providerRef.current?.off('status', statusHandler);
       };
@@ -148,7 +150,8 @@ const BoardPage: React.FC<BoardPageProps> = ({ gameId, game, userId, token, onBa
     const provider = new WebsocketProvider(backendWsUrl, roomName, doc);
     docRef.current = doc;
     providerRef.current = provider;
-    
+    setDocReady(true);
+
     console.log('[BoardPage] Creating WebSocket provider for', roomName);
     setWsConnected(provider.wsconnected);
 
@@ -305,7 +308,11 @@ const BoardPage: React.FC<BoardPageProps> = ({ gameId, game, userId, token, onBa
           </div>
         )}
 
-        {subpage === 'board' ? (
+        {!docReady ? (
+          <div className="flex h-full items-center justify-center text-sm text-slate-400">
+            Connecting…
+          </div>
+        ) : subpage === 'board' ? (
           <div
             ref={boardLayoutRef}
             className="grid h-full min-h-0"
@@ -375,6 +382,7 @@ const BoardPage: React.FC<BoardPageProps> = ({ gameId, game, userId, token, onBa
           <EventDeckSetupPage docRef={docRef} />
         )}
       </main>
+
     </div>
   );
 };

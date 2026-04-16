@@ -380,112 +380,13 @@ const saveGameStateToDb = async (gameId: string, ydoc: Y.Doc) => {
       console.debug(`[DB] Skipping save for non-numeric game ID: ${gameId}`);
       return;
     }
-
-    const gameMap = ydoc.getMap('game');
-    const boards = gameMap.get('boards') as Y.Map<any>;
-    
-    const invaderTrack = gameMap.get('invaderTrack') as Y.Map<unknown> | undefined;
-    const decks = gameMap.get('decks') as Y.Map<unknown> | undefined;
-    const discards = gameMap.get('discards') as Y.Map<unknown> | undefined;
-
-    const state = {
-      currentPhase: (gameMap.get('currentPhase') as string) || 'growth',
-      turn: getSafeNumber(gameMap.get('turn'), getSafeNumber(gameMap.get('round'), 1)),
-      spiritCount: clampMin(getSafeNumber(gameMap.get('spiritCount'), getSafeNumber(gameMap.get('playerCount'), 0)), 0),
-      fearPool: clampMin(getSafeNumber(gameMap.get('fearPool'), 0), 0),
-      fearCardsEarned: clampMin(getSafeNumber(gameMap.get('fearCardsEarned'), 0), 0),
-      terrorLevel: clampMin(getSafeNumber(gameMap.get('terrorLevel'), 1), 1),
-      fearThreshold: clampMin(getSafeNumber(gameMap.get('fearThreshold'), FEAR_PER_PLAYER), FEAR_PER_PLAYER),
-      blightCard: (gameMap.get('blightCard') as string) || 'Unknown Blight Card',
-      blightCount: clampMin(getSafeNumber(gameMap.get('blightCount'), 3), 0),
-      invaderTrack: {
-        ravage: clampMin(getSafeNumber(invaderTrack?.get('ravage'), 0), 0),
-        build: clampMin(getSafeNumber(invaderTrack?.get('build'), 0), 0),
-        explore: clampMin(getSafeNumber(invaderTrack?.get('explore'), 1), 0),
-      },
-      decks: {
-        invader: clampMin(getSafeNumber(decks?.get('invader'), 12), 0),
-        fear: clampMin(getSafeNumber(decks?.get('fear'), 9), 0),
-        event: clampMin(getSafeNumber(decks?.get('event'), 0), 0),
-      },
-      discards: {
-        invader: clampMin(getSafeNumber(discards?.get('invader'), 0), 0),
-        fear: clampMin(getSafeNumber(discards?.get('fear'), 0), 0),
-        event: clampMin(getSafeNumber(discards?.get('event'), 0), 0),
-        blight: clampMin(getSafeNumber(discards?.get('blight'), 0), 0),
-      },
-      boards: {} as Record<string, unknown>,
-    };
-
-    // Serialize boards
-    if (boards) {
-      boards.forEach((boardData: any, boardId: string) => {
-        const lands: any = {};
-        const landsMap = boardData.get('lands') as Y.Map<any>;
-        
-        if (landsMap) {
-          landsMap.forEach((piecesArray: Y.Array<any>, landId: string) => {
-            const pieces: any[] = [];
-            piecesArray.forEach((piece: any) => {
-              pieces.push({
-                type: piece.type,
-                subtype: piece.subtype,
-                health: piece.health,
-                damage: piece.damage,
-                count: piece.count,
-                updatedBy: piece.updatedBy,
-                timestamp: piece.timestamp,
-              });
-            });
-            lands[landId] = pieces;
-          });
-        }
-        
-        const ss = boardData.get('spiritState');
-        const getss = (field: string) => ss?.get?.(field);
-        state.boards[boardId] = {
-          boardId: boardData.get('boardId'),
-          playerId: boardData.get('playerId'),
-          positionInitialized: boardData.get('positionInitialized') === true,
-          x: boardData.get('x') || 0,
-          y: boardData.get('y') || 0,
-          rotation: boardData.get('rotation') || 0,
-          spiritState: {
-            spiritId: typeof getss('spiritId') === 'string' ? getss('spiritId') : null,
-            energy: getSafeNumber(getss('energy'), 0),
-            gainMarkedTurn: getSafeNumber(getss('gainMarkedTurn'), 0),
-            gainMarkedRound: getSafeNumber(getss('gainMarkedRound'), 0),
-            paidMarkedTurn: getSafeNumber(getss('paidMarkedTurn'), 0),
-            paidMarkedRound: getSafeNumber(getss('paidMarkedRound'), 0),
-            paidAmount: getSafeNumber(getss('paidAmount'), 0),
-            presenceSupplySlotIndices: Array.isArray(getss('presenceSupplySlotIndices')) ? getss('presenceSupplySlotIndices') : null,
-            presenceInSupply: clampMin(getSafeNumber(getss('presenceInSupply'), 13), 0),
-            presenceOnIsland: clampMin(getSafeNumber(getss('presenceOnIsland'), 0), 0),
-            presenceDestroyed: clampMin(getSafeNumber(getss('presenceDestroyed'), 0), 0),
-            presenceRemoved: clampMin(getSafeNumber(getss('presenceRemoved'), 0), 0),
-            presenceColor: typeof getss('presenceColor') === 'string' ? getss('presenceColor') : '#facc15',
-            cardsInPlay: Array.isArray(getss('cardsInPlay')) ? getss('cardsInPlay') : [],
-            cardsInHand: Array.isArray(getss('cardsInHand')) ? getss('cardsInHand') : [],
-            cardsInDiscard: Array.isArray(getss('cardsInDiscard')) ? getss('cardsInDiscard') : [],
-            draftSize: getSafeNumber(getss('draftSize'), 4),
-            draftPicks: getSafeNumber(getss('draftPicks'), 1),
-            pendingDraftType: getss('pendingDraftType') ?? null,
-            pendingDraftCardIds: Array.isArray(getss('pendingDraftCardIds')) ? getss('pendingDraftCardIds') : [],
-            pendingDraftPicksRemaining: getSafeNumber(getss('pendingDraftPicksRemaining'), 0),
-            ready: getss('ready') === true,
-          },
-          lands,
-        };
-      });
-    }
-
     const yjsState = Buffer.from(Y.encodeStateAsUpdate(ydoc));
     await pool.query(
-      `INSERT INTO game_snapshots (game_id, board_state, yjs_state, timestamp)
-       VALUES ($1, $2, $3, NOW())
+      `INSERT INTO game_snapshots (game_id, yjs_state, timestamp)
+       VALUES ($1, $2, NOW())
        ON CONFLICT (game_id) DO UPDATE
-         SET board_state = EXCLUDED.board_state, yjs_state = EXCLUDED.yjs_state, timestamp = EXCLUDED.timestamp`,
-      [gameIdNum, JSON.stringify(state), yjsState]
+         SET yjs_state = EXCLUDED.yjs_state, timestamp = EXCLUDED.timestamp`,
+      [gameIdNum, yjsState]
     );
   } catch (err) {
     console.error('Error saving game state:', err);
@@ -500,147 +401,15 @@ const loadGameStateFromDb = async (gameId: string, ydoc: Y.Doc) => {
       console.log(`[DB] Skipping load for non-numeric game ID: ${gameId}`);
       return;
     }
-
     const result = await pool.query(
-      'SELECT board_state, yjs_state FROM game_snapshots WHERE game_id = $1 ORDER BY timestamp DESC LIMIT 1',
+      'SELECT yjs_state FROM game_snapshots WHERE game_id = $1 ORDER BY timestamp DESC LIMIT 1',
       [gameIdNum]
     );
-
-    if (result.rows.length > 0) {
-      // Prefer binary Y.js state — it's a complete, lossless snapshot
-      if (result.rows[0].yjs_state) {
-        console.log(`[DB] Loading binary Y.js state for game ${gameIdNum}`);
-        Y.applyUpdate(ydoc, result.rows[0].yjs_state);
-        console.log(`[DB] Binary state applied for game ${gameIdNum}`);
-        return;
-      }
-
-      const state = result.rows[0].board_state;
-      
-      if (state && typeof state === 'object') {
-        const gameMap = ydoc.getMap('game');
-
-        if (typeof state.currentPhase === 'string') {
-          gameMap.set('currentPhase', state.currentPhase);
-        }
-
-        const loadedTurn = getSafeNumber(state.turn, getSafeNumber(state.round, 1));
-        gameMap.set('turn', clampMin(loadedTurn, 1));
-
-        const loadedSpiritCount = clampMin(getSafeNumber(state.spiritCount, getSafeNumber(state.playerCount, 0)), 0);
-        gameMap.set('spiritCount', loadedSpiritCount);
-        gameMap.set('playerCount', loadedSpiritCount);
-        gameMap.set('fearPool', clampMin(getSafeNumber(state.fearPool, 0), 0));
-        gameMap.set('fearCardsEarned', clampMin(getSafeNumber(state.fearCardsEarned, 0), 0));
-        gameMap.set('terrorLevel', clampMin(getSafeNumber(state.terrorLevel, 1), 1));
-        gameMap.set('fearThreshold', clampMin(getSafeNumber(state.fearThreshold, FEAR_PER_PLAYER), FEAR_PER_PLAYER));
-
-        if (typeof state.blightCard === 'string') {
-          gameMap.set('blightCard', state.blightCard);
-        }
-        gameMap.set('blightCount', clampMin(getSafeNumber(state.blightCount, 3), 0));
-
-        const invaderTrack = ensureNestedMap(gameMap, 'invaderTrack');
-        invaderTrack.set('ravage', clampMin(getSafeNumber(state.invaderTrack?.ravage, 0), 0));
-        invaderTrack.set('build', clampMin(getSafeNumber(state.invaderTrack?.build, 0), 0));
-        invaderTrack.set('explore', clampMin(getSafeNumber(state.invaderTrack?.explore, 1), 0));
-
-        const decks = ensureNestedMap(gameMap, 'decks');
-        decks.set('invader', clampMin(getSafeNumber(state.decks?.invader, 12), 0));
-        decks.set('fear', clampMin(getSafeNumber(state.decks?.fear, 9), 0));
-        decks.set('event', clampMin(getSafeNumber(state.decks?.event, 0), 0));
-
-        const discards = ensureNestedMap(gameMap, 'discards');
-        discards.set('invader', clampMin(getSafeNumber(state.discards?.invader, 0), 0));
-        discards.set('fear', clampMin(getSafeNumber(state.discards?.fear, 0), 0));
-        discards.set('event', clampMin(getSafeNumber(state.discards?.event, 0), 0));
-        discards.set('blight', clampMin(getSafeNumber(state.discards?.blight, 0), 0));
-      }
-
-      if (state && state.boards) {
-        console.log(`[DB] Found ${Object.keys(state.boards).length} boards in state`);
-        const gameMap = ydoc.getMap('game');
-        let boards = gameMap.get('boards') as Y.Map<any>;
-        
-        // Create boards map if it doesn't exist
-        if (!boards) {
-          console.log(`[DB] Creating new boards map`);
-          boards = new Y.Map();
-          gameMap.set('boards', boards);
-        }
-        
-        Object.entries(state.boards).forEach(([boardId, boardData]: any) => {
-          console.log(`[DB] Loading board ${boardId}`);
-          if (!boards.has(boardId)) {
-            const playerBoard = new Y.Map();
-            playerBoard.set('boardId', boardData.boardId);
-            playerBoard.set('playerId', boardData.playerId);
-            
-            const positionInitialized = boardData.positionInitialized === true;
-            const x = positionInitialized ? (boardData.x || 0) : 300;
-            const y = positionInitialized ? (boardData.y || 0) : 200;
-
-            playerBoard.set('positionInitialized', true);
-            playerBoard.set('x', x);
-            playerBoard.set('y', y);
-            playerBoard.set('rotation', boardData.rotation || 0);
-
-            const spiritState = new Y.Map();
-            const loadedSpiritState = boardData.spiritState && typeof boardData.spiritState === 'object'
-              ? boardData.spiritState
-              : {};
-            if (typeof loadedSpiritState.spiritId === 'string' && loadedSpiritState.spiritId.length > 0) {
-              spiritState.set('spiritId', loadedSpiritState.spiritId);
-            }
-            spiritState.set('energy', getSafeNumber(loadedSpiritState.energy, 0));
-            spiritState.set('gainMarkedTurn', getSafeNumber(loadedSpiritState.gainMarkedTurn, 0));
-            spiritState.set('gainMarkedRound', getSafeNumber(loadedSpiritState.gainMarkedRound, 0));
-            spiritState.set('paidMarkedTurn', getSafeNumber(loadedSpiritState.paidMarkedTurn, 0));
-            spiritState.set('paidMarkedRound', getSafeNumber(loadedSpiritState.paidMarkedRound, 0));
-            spiritState.set('paidAmount', getSafeNumber(loadedSpiritState.paidAmount, 0));
-            if (Array.isArray(loadedSpiritState.presenceSupplySlotIndices)) {
-              spiritState.set('presenceSupplySlotIndices', loadedSpiritState.presenceSupplySlotIndices);
-            }
-            spiritState.set('presenceInSupply', clampMin(getSafeNumber(loadedSpiritState.presenceInSupply, 13), 0));
-            spiritState.set('presenceOnIsland', clampMin(getSafeNumber(loadedSpiritState.presenceOnIsland, 0), 0));
-            spiritState.set('presenceDestroyed', clampMin(getSafeNumber(loadedSpiritState.presenceDestroyed, 0), 0));
-            spiritState.set('presenceRemoved', clampMin(getSafeNumber(loadedSpiritState.presenceRemoved, 0), 0));
-            spiritState.set(
-              'presenceColor',
-              typeof loadedSpiritState.presenceColor === 'string' ? loadedSpiritState.presenceColor : '#facc15'
-            );
-            spiritState.set('cardsInPlay', Array.isArray(loadedSpiritState.cardsInPlay) ? loadedSpiritState.cardsInPlay : []);
-            spiritState.set('cardsInHand', Array.isArray(loadedSpiritState.cardsInHand) ? loadedSpiritState.cardsInHand : []);
-            spiritState.set('cardsInDiscard', Array.isArray(loadedSpiritState.cardsInDiscard) ? loadedSpiritState.cardsInDiscard : []);
-            spiritState.set('draftSize', getSafeNumber(loadedSpiritState.draftSize, 4));
-            spiritState.set('draftPicks', getSafeNumber(loadedSpiritState.draftPicks, 1));
-            spiritState.set('pendingDraftType', loadedSpiritState.pendingDraftType ?? null);
-            spiritState.set('pendingDraftCardIds', Array.isArray(loadedSpiritState.pendingDraftCardIds) ? loadedSpiritState.pendingDraftCardIds : []);
-            spiritState.set('pendingDraftPicksRemaining', getSafeNumber(loadedSpiritState.pendingDraftPicksRemaining, 0));
-            spiritState.set('ready', loadedSpiritState.ready === true);
-            playerBoard.set('spiritState', spiritState);
-            
-            const lands = new Y.Map();
-            Object.entries(boardData.lands).forEach(([landId, pieces]: any) => {
-              const piecesArray = new Y.Array();
-              if (Array.isArray(pieces)) {
-                pieces.forEach((piece: any) => {
-                  piecesArray.push([piece]);
-                });
-              }
-              lands.set(landId, piecesArray);
-            });
-            
-            playerBoard.set('lands', lands);
-            boards.set(boardId, playerBoard);
-            console.log(`[DB] Board ${boardId} loaded successfully`);
-          }
-        });
-        
-        console.log(`[DB] Load complete. Boards map now has size ${boards.size}`);
-      }
+    if (result.rows.length > 0 && result.rows[0].yjs_state) {
+      console.log(`[DB] Loading Y.js state for game ${gameIdNum}`);
+      Y.applyUpdate(ydoc, result.rows[0].yjs_state);
     } else {
-      console.log(`[DB] No snapshots found for game ${gameIdNum}`);
+      console.log(`[DB] No snapshot found for game ${gameIdNum}`);
     }
   } catch (err) {
     console.error('Error loading game state:', err);
