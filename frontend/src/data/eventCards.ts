@@ -1,6 +1,18 @@
 import { type DeckCardDefinition } from './deckCard';
 
-export type EventCardDefinition = DeckCardDefinition;
+export type EventCardDefinition = DeckCardDefinition & {
+  /** If true, when this card is revealed a "Return under top 3" button appears instead of discarding */
+  returnsUnderTop3?: boolean;
+};
+
+/** France L2+ only — shuffled into the event deck under the top 3 cards at setup */
+export const SLAVE_REBELLION_CARD: EventCardDefinition = {
+  id: 'slave-rebellion',
+  name: 'Slave Rebellion',
+  faceUrl: 'https://steamusercontent-a.akamaihd.net/ugc/2050875404517238521/D0D6802A9900FAF956087539BD7757DE2CAC90CE/',
+  backUrl: 'https://steamusercontent-a.akamaihd.net/ugc/2050875404517238966/02BD15E4CB64460CAEAD4F2C0DB7ABADEB0A8C0A/',
+  returnsUnderTop3: true,
+};
 
 export const EVENT_CARDS: EventCardDefinition[] = [
   {
@@ -385,6 +397,11 @@ const shuffleCards = <T,>(cards: T[]): T[] => {
   return shuffled;
 };
 
-export const createShuffledEventCardDeck = () => {
-  return shuffleCards(EVENT_CARDS);
+export const createShuffledEventCardDeck = (adversaryId?: string, adversaryLevel?: number) => {
+  const deck: EventCardDefinition[] = shuffleCards(EVENT_CARDS);
+  if (adversaryId === 'france' && (adversaryLevel ?? 0) >= 2) {
+    const insertIdx = Math.min(3, deck.length);
+    deck.splice(insertIdx, 0, SLAVE_REBELLION_CARD);
+  }
+  return deck;
 };

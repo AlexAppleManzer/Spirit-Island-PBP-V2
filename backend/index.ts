@@ -411,6 +411,8 @@ const saveGameStateToDb = async (gameId: string, ydoc: Y.Doc) => {
           });
         }
         
+        const ss = boardData.get('spiritState');
+        const getss = (field: string) => ss?.get?.(field);
         state.boards[boardId] = {
           boardId: boardData.get('boardId'),
           playerId: boardData.get('playerId'),
@@ -418,14 +420,28 @@ const saveGameStateToDb = async (gameId: string, ydoc: Y.Doc) => {
           y: boardData.get('y') || 0,
           rotation: boardData.get('rotation') || 0,
           spiritState: {
-            energy: getSafeNumber(boardData.get('spiritState')?.get?.('energy'), 0),
-            presenceInSupply: clampMin(getSafeNumber(boardData.get('spiritState')?.get?.('presenceInSupply'), 13), 0),
-            presenceOnIsland: clampMin(getSafeNumber(boardData.get('spiritState')?.get?.('presenceOnIsland'), 0), 0),
-            presenceDestroyed: clampMin(getSafeNumber(boardData.get('spiritState')?.get?.('presenceDestroyed'), 0), 0),
-            presenceRemoved: clampMin(getSafeNumber(boardData.get('spiritState')?.get?.('presenceRemoved'), 0), 0),
-            presenceColor: typeof boardData.get('spiritState')?.get?.('presenceColor') === 'string'
-              ? boardData.get('spiritState').get('presenceColor')
-              : '#facc15',
+            spiritId: typeof getss('spiritId') === 'string' ? getss('spiritId') : null,
+            energy: getSafeNumber(getss('energy'), 0),
+            gainMarkedTurn: getSafeNumber(getss('gainMarkedTurn'), 0),
+            gainMarkedRound: getSafeNumber(getss('gainMarkedRound'), 0),
+            paidMarkedTurn: getSafeNumber(getss('paidMarkedTurn'), 0),
+            paidMarkedRound: getSafeNumber(getss('paidMarkedRound'), 0),
+            paidAmount: getSafeNumber(getss('paidAmount'), 0),
+            presenceSupplySlotIndices: Array.isArray(getss('presenceSupplySlotIndices')) ? getss('presenceSupplySlotIndices') : null,
+            presenceInSupply: clampMin(getSafeNumber(getss('presenceInSupply'), 13), 0),
+            presenceOnIsland: clampMin(getSafeNumber(getss('presenceOnIsland'), 0), 0),
+            presenceDestroyed: clampMin(getSafeNumber(getss('presenceDestroyed'), 0), 0),
+            presenceRemoved: clampMin(getSafeNumber(getss('presenceRemoved'), 0), 0),
+            presenceColor: typeof getss('presenceColor') === 'string' ? getss('presenceColor') : '#facc15',
+            cardsInPlay: Array.isArray(getss('cardsInPlay')) ? getss('cardsInPlay') : [],
+            cardsInHand: Array.isArray(getss('cardsInHand')) ? getss('cardsInHand') : [],
+            cardsInDiscard: Array.isArray(getss('cardsInDiscard')) ? getss('cardsInDiscard') : [],
+            draftSize: getSafeNumber(getss('draftSize'), 4),
+            draftPicks: getSafeNumber(getss('draftPicks'), 1),
+            pendingDraftType: getss('pendingDraftType') ?? null,
+            pendingDraftCardIds: Array.isArray(getss('pendingDraftCardIds')) ? getss('pendingDraftCardIds') : [],
+            pendingDraftPicksRemaining: getSafeNumber(getss('pendingDraftPicksRemaining'), 0),
+            ready: getss('ready') === true,
           },
           lands,
         };
@@ -533,7 +549,18 @@ const loadGameStateFromDb = async (gameId: string, ydoc: Y.Doc) => {
             const loadedSpiritState = boardData.spiritState && typeof boardData.spiritState === 'object'
               ? boardData.spiritState
               : {};
+            if (typeof loadedSpiritState.spiritId === 'string' && loadedSpiritState.spiritId.length > 0) {
+              spiritState.set('spiritId', loadedSpiritState.spiritId);
+            }
             spiritState.set('energy', getSafeNumber(loadedSpiritState.energy, 0));
+            spiritState.set('gainMarkedTurn', getSafeNumber(loadedSpiritState.gainMarkedTurn, 0));
+            spiritState.set('gainMarkedRound', getSafeNumber(loadedSpiritState.gainMarkedRound, 0));
+            spiritState.set('paidMarkedTurn', getSafeNumber(loadedSpiritState.paidMarkedTurn, 0));
+            spiritState.set('paidMarkedRound', getSafeNumber(loadedSpiritState.paidMarkedRound, 0));
+            spiritState.set('paidAmount', getSafeNumber(loadedSpiritState.paidAmount, 0));
+            if (Array.isArray(loadedSpiritState.presenceSupplySlotIndices)) {
+              spiritState.set('presenceSupplySlotIndices', loadedSpiritState.presenceSupplySlotIndices);
+            }
             spiritState.set('presenceInSupply', clampMin(getSafeNumber(loadedSpiritState.presenceInSupply, 13), 0));
             spiritState.set('presenceOnIsland', clampMin(getSafeNumber(loadedSpiritState.presenceOnIsland, 0), 0));
             spiritState.set('presenceDestroyed', clampMin(getSafeNumber(loadedSpiritState.presenceDestroyed, 0), 0));
@@ -542,6 +569,15 @@ const loadGameStateFromDb = async (gameId: string, ydoc: Y.Doc) => {
               'presenceColor',
               typeof loadedSpiritState.presenceColor === 'string' ? loadedSpiritState.presenceColor : '#facc15'
             );
+            spiritState.set('cardsInPlay', Array.isArray(loadedSpiritState.cardsInPlay) ? loadedSpiritState.cardsInPlay : []);
+            spiritState.set('cardsInHand', Array.isArray(loadedSpiritState.cardsInHand) ? loadedSpiritState.cardsInHand : []);
+            spiritState.set('cardsInDiscard', Array.isArray(loadedSpiritState.cardsInDiscard) ? loadedSpiritState.cardsInDiscard : []);
+            spiritState.set('draftSize', getSafeNumber(loadedSpiritState.draftSize, 4));
+            spiritState.set('draftPicks', getSafeNumber(loadedSpiritState.draftPicks, 1));
+            spiritState.set('pendingDraftType', loadedSpiritState.pendingDraftType ?? null);
+            spiritState.set('pendingDraftCardIds', Array.isArray(loadedSpiritState.pendingDraftCardIds) ? loadedSpiritState.pendingDraftCardIds : []);
+            spiritState.set('pendingDraftPicksRemaining', getSafeNumber(loadedSpiritState.pendingDraftPicksRemaining, 0));
+            spiritState.set('ready', loadedSpiritState.ready === true);
             playerBoard.set('spiritState', spiritState);
             
             const lands = new Y.Map();

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import * as Y from 'yjs';
-import { DEFAULT_INVADER_DECK, createInvaderSetupDeckForAdversary, type InvaderCardDefinition } from '../data/invaderCards';
+import { DEFAULT_INVADER_DECK, createInvaderSetupDeckForAdversary, INVADER_CARDS, type InvaderCardDefinition } from '../data/invaderCards';
 import {
   EVENT_CARDS,
   createShuffledEventCardDeck,
@@ -79,6 +79,10 @@ type GamestateSnapshot = {
   blightCard: string;
   blightCount: number;
   adversary: string;
+  adversaryId: string;
+  adversaryLevel: number;
+  adversaryCounter: number;
+  townCount: number;
   forgottenMinorPowerCards: ForgottenPowerCard[];
   forgottenMajorPowerCards: ForgottenPowerCard[];
   forgottenUniquePowerCards: ForgottenPowerCard[];
@@ -220,6 +224,26 @@ const getTerrorLevelFromFearCards = (fearCardsEarned: number, fearThresholds: nu
   return 1;
 };
 
+const countTownsOnBoards = (gameMap: Y.Map<unknown>): number => {
+  const boards = gameMap.get('boards');
+  if (!(boards instanceof Y.Map)) return 0;
+  let count = 0;
+  boards.forEach((boardData) => {
+    if (!(boardData instanceof Y.Map)) return;
+    const landsMap = boardData.get('lands');
+    if (!(landsMap instanceof Y.Map)) return;
+    landsMap.forEach((piecesArray) => {
+      if (!(piecesArray instanceof Y.Array)) return;
+      piecesArray.forEach((piece) => {
+        if (piece && typeof piece === 'object' && (piece as Record<string, unknown>).type === 'town') {
+          count += 1;
+        }
+      });
+    });
+  });
+  return count;
+};
+
 const ensureNestedMap = (parent: Y.Map<unknown>, key: string) => {
   const existing = parent.get(key);
   if (existing instanceof Y.Map) {
@@ -283,6 +307,20 @@ const ensureGamestateDefaults = (doc: Y.Doc) => {
 
   gameMap.set('terrorLevel', getTerrorLevelFromFearCards(fearCardsEarned, fearThresholds));
 
+  // Adversary identity (set once at game creation, read-only here)
+  const adversaryId = (gameConfig instanceof Y.Map
+    ? (gameConfig as Y.Map<unknown>).get('adversary') as string
+    : null) ?? 'none';
+  const adversaryLevel = getSafeNumber(
+    gameConfig instanceof Y.Map ? (gameConfig as Y.Map<unknown>).get('adversaryLevel') : undefined,
+    0,
+  );
+
+  // Adversary-specific counter (France town supply, Habsburg damage, Russia beast kills)
+  if (!gameMap.has('adversaryCounter')) {
+    gameMap.set('adversaryCounter', 0);
+  }
+
   if (!gameMap.has('blightCard')) {
     gameMap.set('blightCard', 'Unknown Blight Card');
   }
@@ -342,9 +380,9 @@ const ensureGamestateDefaults = (doc: Y.Doc) => {
   const rawEventDeckCards = gameMap.get('eventDeckCards');
   const parsedEventDeckCards = parseDeckCardList<EventCard>(rawEventDeckCards);
   if (!Array.isArray(rawEventDeckCards)) {
-    gameMap.set('eventDeckCards', createShuffledEventCardDeck());
+    gameMap.set('eventDeckCards', createShuffledEventCardDeck(adversaryId, adversaryLevel));
   } else if (parsedEventDeckCards.length === 0 && EVENT_CARDS.length > 0) {
-    gameMap.set('eventDeckCards', createShuffledEventCardDeck());
+    gameMap.set('eventDeckCards', createShuffledEventCardDeck(adversaryId, adversaryLevel));
   }
 
   if (!Array.isArray(gameMap.get('eventRemovedCards'))) {
@@ -360,7 +398,46 @@ const ensureGamestateDefaults = (doc: Y.Doc) => {
   const rawFearDeckCards = gameMap.get('fearDeckCards');
   const parsedFearDeckCards = parseDeckCardList<FearCard>(rawFearDeckCards);
   if (!Array.isArray(rawFearDeckCards)) {
-    gameMap.set('fearDeckCards', createShuffledFearCardDeck());
+    let fearDeck = createShuffledFearCardDeck();
+    // Russia L5+: embed an unused Stage II card under top 3 fear cards,
+    // and an unused Stage III card under top 7 fear cards.
+    if (adversaryId === 'russia' && adversaryLevel >= 5) {
+      let removedInvaders = parseInvaderCardList(gameMap.get('invaderRemovedCards'));
+      const stage2Card = removedInvaders.find((c) => c.stage === 2);
+      const stage3Card = removedInvaders.find((c) => c.stage === 3);
+
+      if (stage2Card) {
+        removedInvaders = removedInvaders.filter((c) => c.id !== stage2Card.id);
+        const bomb2: FearCard = {
+          id: 'russia-invader-bomb-stage2',
+          name: `Russia Bomb: ${stage2Card.name}`,
+          faceUrl: stage2Card.faceUrl,
+          backUrl: stage2Card.backUrl,
+          embeddedInvaderStage: 2,
+          embeddedInvaderCardId: stage2Card.id,
+        };
+        // Insert "under top 3 fear cards" = at index 3
+        fearDeck = [...fearDeck.slice(0, 3), bomb2, ...fearDeck.slice(3)];
+      }
+
+      if (stage3Card) {
+        removedInvaders = removedInvaders.filter((c) => c.id !== stage3Card.id);
+        const bomb3: FearCard = {
+          id: 'russia-invader-bomb-stage3',
+          name: `Russia Bomb: ${stage3Card.name}`,
+          faceUrl: stage3Card.faceUrl,
+          backUrl: stage3Card.backUrl,
+          embeddedInvaderStage: 3,
+          embeddedInvaderCardId: stage3Card.id,
+        };
+        // "Under top 7 fear cards" = index 7 in original deck.
+        // With bomb2 already at index 3, that original index 7 is now index 8.
+        fearDeck = [...fearDeck.slice(0, 8), bomb3, ...fearDeck.slice(8)];
+      }
+
+      gameMap.set('invaderRemovedCards', removedInvaders);
+    }
+    gameMap.set('fearDeckCards', fearDeck);
   } else if (parsedFearDeckCards.length === 0 && FEAR_CARDS.length > 0) {
     gameMap.set('fearDeckCards', createShuffledFearCardDeck());
   }
@@ -517,6 +594,10 @@ const readSnapshot = (doc: Y.Doc): GamestateSnapshot => {
     blightCard: (currentBlightCard?.name || (gameMap.get('blightCard') as string)) || 'Unknown Blight Card',
     blightCount: clampMin(getSafeNumber(gameMap.get('blightCount'), spiritCount * 2 + 1), 0),
     adversary: (gameConfig?.get('adversary') as string) || 'Unknown Adversary',
+    adversaryId: (gameConfig?.get('adversary') as string) || 'none',
+    adversaryLevel: getSafeNumber(gameConfig?.get('adversaryLevel'), 0),
+    adversaryCounter: clampMin(getSafeNumber(gameMap.get('adversaryCounter'), 0), 0),
+    townCount: countTownsOnBoards(gameMap),
     forgottenMinorPowerCards: parseForgottenPowerCardList(gameMap.get('forgottenMinorPowerCards')),
     forgottenMajorPowerCards: parseForgottenPowerCardList(gameMap.get('forgottenMajorPowerCards')),
     forgottenUniquePowerCards: parseForgottenPowerCardList(gameMap.get('forgottenUniquePowerCards')),
@@ -555,6 +636,10 @@ const initialSnapshot: GamestateSnapshot = {
   blightCard: 'Unknown Blight Card',
   blightCount: 3,
   adversary: 'Unknown Adversary',
+  adversaryId: 'none',
+  adversaryLevel: 0,
+  adversaryCounter: 0,
+  townCount: 0,
   forgottenMinorPowerCards: [],
   forgottenMajorPowerCards: [],
   forgottenUniquePowerCards: [],
@@ -864,52 +949,6 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef, selectedBoardId
     });
   };
 
-  const adjustFearCardsEarned = (delta: number) => {
-    withGameMap((_doc, gameMap) => {
-      const gameConfig = gameMap.get('gameConfig') as Y.Map<unknown> | undefined;
-      let fearThresholds = DEFAULT_FEAR_THRESHOLDS;
-
-      if (gameConfig) {
-        const configThresholds = gameConfig.get('fearThresholds');
-        if (Array.isArray(configThresholds)) {
-          fearThresholds = configThresholds;
-        }
-      }
-
-      let fearCardsEarned = clampMin(getSafeNumber(gameMap.get('fearCardsEarned'), 0), 0);
-      let fearDeck = parseDeckCardList<FearCard>(gameMap.get('fearDeckCards'));
-      let fearEarned = parseDeckCardList<FearCard>(gameMap.get('fearEarnedCards'));
-
-      if (delta > 0) {
-        for (let i = 0; i < delta; i += 1) {
-          fearCardsEarned += 1;
-          const [earnedCard, ...remainingFearDeck] = fearDeck;
-          if (earnedCard) {
-            fearEarned = [...fearEarned, earnedCard];
-            fearDeck = remainingFearDeck;
-          }
-        }
-      } else if (delta < 0) {
-        for (let i = 0; i < Math.abs(delta); i += 1) {
-          if (fearCardsEarned === 0) break;
-          fearCardsEarned -= 1;
-          const lastEarned = fearEarned[fearEarned.length - 1];
-          if (lastEarned) {
-            fearEarned = fearEarned.slice(0, -1);
-            fearDeck = [lastEarned, ...fearDeck];
-          }
-        }
-      }
-
-      gameMap.set('fearCardsEarned', fearCardsEarned);
-      gameMap.set('fearDeckCards', fearDeck);
-      gameMap.set('fearEarnedCards', fearEarned);
-
-      const terrorLevel = getTerrorLevelFromFearCards(fearCardsEarned, fearThresholds);
-      gameMap.set('terrorLevel', terrorLevel);
-      syncDeckAndDiscardCounts(gameMap);
-    });
-  };
 
   const revealEventCard = () => {
     withGameMap((_doc, gameMap) => {
@@ -954,7 +993,40 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef, selectedBoardId
       }
 
       gameMap.set('fearEarnedCards', remainingEarned);
+
+      // Russia L5+ invader bomb: auto-place the embedded invader card in the Build space
+      if (nextFearCard.embeddedInvaderCardId) {
+        const invaderCard = INVADER_CARDS.find((c) => c.id === nextFearCard.embeddedInvaderCardId);
+        if (invaderCard) {
+          const trackCards = parseTrackCards(gameMap.get('invaderTrackCards'));
+          gameMap.set('invaderTrackCards', {
+            ravage: trackCards.ravage,
+            build: [...trackCards.build, invaderCard],
+            explore: trackCards.explore,
+          });
+        }
+        // Still surface it as currentFearCard so players see what happened
+      }
+
       gameMap.set('currentFearCard', nextFearCard);
+      syncDeckAndDiscardCounts(gameMap);
+    });
+  };
+
+  /** Return a card with returnsUnderTop3 (e.g. Slave Rebellion) back into the event deck below the top 3 */
+  const returnEventCardUnderTop3 = () => {
+    withGameMap((_doc, gameMap) => {
+      const card = parseSingleDeckCard<EventCard>(gameMap.get('currentEventCard'));
+      if (!card) return;
+
+      const eventDeck = parseDeckCardList<EventCard>(gameMap.get('eventDeckCards'));
+      const insertIdx = Math.min(3, eventDeck.length);
+      gameMap.set('eventDeckCards', [
+        ...eventDeck.slice(0, insertIdx),
+        card,
+        ...eventDeck.slice(insertIdx),
+      ]);
+      gameMap.set('currentEventCard', null);
       syncDeckAndDiscardCounts(gameMap);
     });
   };
@@ -1091,6 +1163,13 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef, selectedBoardId
     });
   };
 
+  const adjustAdversaryCounter = (delta: number) => {
+    withGameMap((_doc, gameMap) => {
+      const current = getSafeNumber(gameMap.get('adversaryCounter'), 0);
+      gameMap.set('adversaryCounter', clampMin(current + delta, 0));
+    });
+  };
+
   const sendForgottenCardToHand = (
     cardId: string,
     pileKey: 'forgottenMinorPowerCards' | 'forgottenMajorPowerCards' | 'forgottenUniquePowerCards',
@@ -1185,6 +1264,15 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef, selectedBoardId
               />
             </div>
             <p className="mt-2 text-center text-sm font-semibold text-slate-900">{snapshot.currentEventCard.name}</p>
+            {snapshot.currentEventCard.returnsUnderTop3 ? (
+              <button
+                type="button"
+                onClick={returnEventCardUnderTop3}
+                className="mt-2 w-full rounded border border-indigo-400 bg-indigo-50 px-3 py-1 text-xs font-semibold text-indigo-800 hover:bg-indigo-100"
+              >
+                Return under Top 3
+              </button>
+            ) : null}
           </div>
         ) : null}
       </section>
@@ -1235,7 +1323,14 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef, selectedBoardId
         </div>
         {snapshot.currentFearCard ? (
           <div className="rounded border border-rose-200 bg-white p-3">
-            <p className="text-xs font-semibold uppercase tracking-wide text-rose-700">Revealed Fear Card</p>
+            <p className="text-xs font-semibold uppercase tracking-wide text-rose-700">
+              {snapshot.currentFearCard.embeddedInvaderStage ? 'Russia Invader Bomb' : 'Revealed Fear Card'}
+            </p>
+            {snapshot.currentFearCard.embeddedInvaderStage ? (
+              <div className="mt-2 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                A Stage {snapshot.currentFearCard.embeddedInvaderStage} Invader Card has been automatically placed in the <strong>Build</strong> space.
+              </div>
+            ) : null}
             <div className="mt-2 flex justify-center">
               <img
                 src={snapshot.currentFearCard.faceUrl}
@@ -1267,13 +1362,6 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef, selectedBoardId
           ] as const).map(({ key, label, bgClass, textClass }) => {
             const slotCards = snapshot.invaderTrackCards[key];
             const previewCard = key === 'explore' && slotCards.length === 0 ? snapshot.invaderDeckCards[0] ?? null : null;
-            const lands =
-              key === 'ravage'
-                ? snapshot.invaderLands.ravageLands
-                : key === 'build'
-                ? snapshot.invaderLands.buildLands
-                : snapshot.invaderLands.exploredLands;
-
             const CARD_W = 140;
             const CARD_H = 200;
             const SPLAY_OFFSET = CARD_W / 2;
@@ -1397,6 +1485,70 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef, selectedBoardId
           </div>
         ) : null}
       </section>
+
+      {(() => {
+        const { adversaryId, adversaryLevel, adversaryCounter, spiritCount, townCount } = snapshot;
+        if (adversaryId === 'france') {
+          const max = 7 * spiritCount;
+          const isLoss = townCount > max;
+          return (
+            <section className="space-y-2 rounded-lg border border-orange-200 bg-orange-50 p-3">
+              <h2 className="text-sm font-semibold uppercase tracking-wide text-orange-800">France — Town Count</h2>
+              <p className="text-xs text-orange-700">Invaders win if towns on the board exceed {max} ({7}×{spiritCount} spirits).</p>
+              <div className="flex items-center justify-between rounded border border-orange-200 bg-white px-3 py-2">
+                <span className="text-sm font-medium text-slate-700">Towns on Board</span>
+                <span className="text-lg font-bold text-slate-900">{townCount} / {max}</span>
+              </div>
+              {isLoss ? (
+                <div className="rounded border border-red-400 bg-red-100 px-3 py-2 text-sm font-semibold text-red-800">
+                  Loss condition met: town count ({townCount}) exceeds {max}!
+                </div>
+              ) : null}
+              {adversaryLevel >= 2 ? (
+                <p className="text-xs text-orange-600">Slave Rebellion card has been shuffled into the event deck under the top 3 cards.</p>
+              ) : null}
+            </section>
+          );
+        }
+        if (adversaryId === 'habsburg-livestock') {
+          const isLoss = adversaryCounter > spiritCount;
+          return (
+            <section className="space-y-2 rounded-lg border border-orange-200 bg-orange-50 p-3">
+              <h2 className="text-sm font-semibold uppercase tracking-wide text-orange-800">Habsburg Livestock — Damage Tracker</h2>
+              <p className="text-xs text-orange-700">Tick up when a Ravage deals 8+ damage. Invaders win if this exceeds {spiritCount} (spirit count).</p>
+              <CounterRow
+                label="Livestock Damage"
+                value={adversaryCounter}
+                onDecrement={() => adjustAdversaryCounter(-1)}
+                onIncrement={() => adjustAdversaryCounter(1)}
+              />
+              {isLoss ? (
+                <div className="rounded border border-red-400 bg-red-100 px-3 py-2 text-sm font-semibold text-red-800">
+                  Loss condition met: damage count ({adversaryCounter}) exceeds spirit count ({spiritCount})!
+                </div>
+              ) : null}
+            </section>
+          );
+        }
+        if (adversaryId === 'russia') {
+          return (
+            <section className="space-y-2 rounded-lg border border-orange-200 bg-orange-50 p-3">
+              <h2 className="text-sm font-semibold uppercase tracking-wide text-orange-800">Russia — Hunted Beasts</h2>
+              <p className="text-xs text-orange-700">Tick up each time the adversary destroys a Beast. Invaders win if this exceeds the number of Beast tokens currently on the board.</p>
+              <CounterRow
+                label="Hunted Beasts"
+                value={adversaryCounter}
+                onDecrement={() => adjustAdversaryCounter(-1)}
+                onIncrement={() => adjustAdversaryCounter(1)}
+              />
+              {adversaryLevel >= 5 ? (
+                <p className="text-xs text-orange-600">Invader bombs are embedded in the fear deck (Stage II under card 3, Stage III under card 7). They auto-place in Build when revealed.</p>
+              ) : null}
+            </section>
+          );
+        }
+        return null;
+      })()}
 
       <section className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-700">Decks</h2>

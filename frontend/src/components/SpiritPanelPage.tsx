@@ -1749,38 +1749,51 @@ const FullSpiritView: React.FC<FullSpiritViewProps> = ({
       </div>
 
       <div className="rounded-lg border border-amber-200 bg-white p-2">
-        <span className="text-[10px] font-bold uppercase tracking-wide text-amber-700">Destroyed Presence</span>
-        <div className="mt-1.5 flex flex-wrap gap-1.5">
+        <div className="flex items-center gap-2 mb-1.5">
+          <span className="text-[10px] font-bold uppercase tracking-wide text-amber-700">
+            Destroyed Presence ({selectedState.presenceDestroyed})
+          </span>
           <button
             type="button"
-            onClick={() => recalcPresence(selectedState.boardId, {
-              presenceOnIsland: selectedState.presenceOnIsland - 1,
-              presenceDestroyed: selectedState.presenceDestroyed + 1,
-            })}
-            className="rounded border border-amber-300 bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-700 hover:bg-amber-100"
-          >
-            Mark Destroyed ({selectedState.presenceDestroyed})
-          </button>
-          <button
-            type="button"
-            onClick={() => recalcPresence(selectedState.boardId, {
-              presenceDestroyed: selectedState.presenceDestroyed - 1,
-              presenceInSupply: selectedState.presenceInSupply + 1,
-            })}
-            className="rounded border border-emerald-300 bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 hover:bg-emerald-100"
-          >
-            Return Destroyed
-          </button>
-          <button
-            type="button"
+            disabled={selectedState.presenceDestroyed === 0}
             onClick={() => recalcPresence(selectedState.boardId, {
               presenceDestroyed: selectedState.presenceDestroyed - 1,
               presenceRemoved: selectedState.presenceRemoved + 1,
             })}
-            className="rounded border border-rose-300 bg-rose-50 px-2 py-0.5 text-[10px] font-semibold text-rose-700 hover:bg-rose-100"
+            className={`rounded border px-1.5 py-0.5 text-[9px] font-semibold ${
+              selectedState.presenceDestroyed === 0
+                ? 'cursor-not-allowed border-slate-200 bg-slate-50 text-slate-300'
+                : 'border-rose-300 bg-rose-50 text-rose-700 hover:bg-rose-100'
+            }`}
+            title="Permanently remove a destroyed presence from the game"
           >
             Remove from Game ({selectedState.presenceRemoved})
           </button>
+        </div>
+        <div className="flex flex-wrap gap-2 items-center min-h-[36px]">
+          {selectedState.presenceDestroyed === 0 && (
+            <p className="text-[10px] text-slate-400 italic">No destroyed presence</p>
+          )}
+          {Array.from({ length: selectedState.presenceDestroyed }, (_, i) => (
+            <div
+              key={i}
+              draggable
+              onDragStart={(e) => {
+                e.dataTransfer.effectAllowed = 'copy';
+                e.dataTransfer.setData('piece-type', 'presence-destroyed-from-panel');
+                e.dataTransfer.setData('spirit-board-id', selectedState.boardId);
+              }}
+              className="cursor-grab"
+              title="Drag onto a board land to re-add this presence to the island"
+            >
+              <img
+                src="/DestroyedPresence.png"
+                alt="Destroyed Presence"
+                style={{ width: 32, height: 32, objectFit: 'contain' }}
+                draggable={false}
+              />
+            </div>
+          ))}
         </div>
         <p className="mt-1 text-[10px] text-slate-400">
           Supply: {selectedState.presenceInSupply} · Island: {selectedState.presenceOnIsland} · Destroyed: {selectedState.presenceDestroyed} · Removed: {selectedState.presenceRemoved} / 13

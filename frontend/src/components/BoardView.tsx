@@ -236,6 +236,7 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
   const [editorStrife, setEditorStrife] = useState(0);
   const [showAdvancedTokens, setShowAdvancedTokens] = useState(false);
   const [spiritColors, setSpiritColors] = useState<Map<string, string>>(new Map());
+  const [hoveredDropZone, setHoveredDropZone] = useState<'remove' | 'destroy' | null>(null);
   const didAutoCenterRef = useRef(false);
 
   useEffect(() => {
@@ -482,13 +483,14 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
     const externalPieceType = e.dataTransfer.getData('piece-type');
     const isBlightFromCard = externalPieceType === 'blight-from-card';
     const isPresenceFromPanel = externalPieceType === 'presence-from-panel';
-    const spiritBoardId = isPresenceFromPanel ? e.dataTransfer.getData('spirit-board-id') : '';
+    const isPresenceDestroyedFromPanel = externalPieceType === 'presence-destroyed-from-panel';
+    const spiritBoardId = (isPresenceFromPanel || isPresenceDestroyedFromPanel) ? e.dataTransfer.getData('spirit-board-id') : '';
     const spiritSlotIndexRaw = isPresenceFromPanel ? e.dataTransfer.getData('spirit-slot-index') : '';
     const spiritSlotIndex = Number.parseInt(spiritSlotIndexRaw, 10);
     const spiritSlotRewardRaw = isPresenceFromPanel ? e.dataTransfer.getData('spirit-slot-reward') : '';
     const spiritSlotReward = spiritSlotRewardRaw.trim();
     const hasPresenceSlotIndex = Number.isInteger(spiritSlotIndex) && spiritSlotIndex >= 0;
-    const activePieceType = draggedPieceType ?? (isBlightFromCard ? 'blight' : isPresenceFromPanel ? 'presence' : null);
+    const activePieceType = draggedPieceType ?? (isBlightFromCard ? 'blight' : isPresenceFromPanel ? 'presence' : isPresenceDestroyedFromPanel ? 'presence' : null);
 
     console.log('DROP EVENT - activePieceType:', activePieceType);
 
@@ -621,6 +623,29 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
                 spiritState.set('presenceInSupply', Math.max(0, current - 1));
               }
               spiritState.set('presenceOnIsland', Math.max(0, (typeof spiritState.get('presenceOnIsland') === 'number' ? spiritState.get('presenceOnIsland') as number : 0) + 1));
+            });
+          }
+        }
+      }
+    }
+
+    // When a destroyed presence is dragged back onto the island, decrement presenceDestroyed
+    if (isPresenceDestroyedFromPanel && foundLand && spiritBoardId) {
+      const boardsMapDP = gameMap.get('boards') as Y.Map<any> | undefined;
+      if (boardsMapDP) {
+        const boardDataDP = boardsMapDP.get(spiritBoardId) as any;
+        if (boardDataDP) {
+          const spiritStateDP = boardDataDP.get('spiritState');
+          if (spiritStateDP instanceof Y.Map) {
+            doc.transact(() => {
+              const currentDestroyed = typeof spiritStateDP.get('presenceDestroyed') === 'number'
+                ? spiritStateDP.get('presenceDestroyed') as number
+                : 0;
+              const currentOnIsland = typeof spiritStateDP.get('presenceOnIsland') === 'number'
+                ? spiritStateDP.get('presenceOnIsland') as number
+                : 0;
+              spiritStateDP.set('presenceDestroyed', Math.max(0, currentDestroyed - 1));
+              spiritStateDP.set('presenceOnIsland', currentOnIsland + 1);
             });
           }
         }
@@ -797,6 +822,76 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
     if (location.pieceIndex < 0 || location.pieceIndex >= piecesArray.length) return;
 
     piecesArray.delete(location.pieceIndex, 1);
+  };
+
+  const addFear = (amount: number) => {
+    const doc = docRef.current;
+    if (!doc || amount <= 0) return;
+    const gameMap = doc.getMap('game');
+    doc.transact(() => {
+      const getNum = (key: string, fallback: number) => {
+        const v = gameMap.get(key);
+        return typeof v === 'number' && Number.isFinite(v) ? v : fallback;
+      };
+      let fearPool = Math.max(0, getNum('fearPool', 0));
+      const fearThreshold = getNum('fearThreshold', 4);
+      let fearCardsEarned = Math.max(0, getNum('fearCardsEarned', 0));
+      let fearDeck = Array.isArray(gameMap.get('fearDeckCards')) ? [...(gameMap.get('fearDeckCards') as any[])] : [];
+      let fearEarned = Array.isArray(gameMap.get('fearEarnedCards')) ? [...(gameMap.get('fearEarnedCards') as any[])] : [];
+      fearPool += amount;
+      if (fearThreshold > 0) {
+        while (fearPool >= fearThreshold) {
+          fearPool -= fearThreshold;
+          fearCardsEarned += 1;
+          const [earnedCard, ...remaining] = fearDeck;
+          if (earnedCard) {
+            fearEarned = [...fearEarned, earnedCard];
+            fearDeck = remaining;
+          }
+        }
+      }
+      gameMap.set('fearPool', fearPool);
+      gameMap.set('fearCardsEarned', fearCardsEarned);
+      gameMap.set('fearDeckCards', fearDeck);
+      gameMap.set('fearEarnedCards', fearEarned);
+    }, 'fear-add');
+  };
+
+  const returnPresenceToDestroyedPile = (piece: GamePiece) => {
+    const spiritBoardId = piece.subtype ?? '';
+    if (!spiritBoardId) return;
+    const doc = docRef.current;
+    if (!doc) return;
+    doc.transact(() => {
+      const gameMap = doc.getMap('game');
+      const boardsMap = gameMap.get('boards') as Y.Map<any> | undefined;
+      if (!boardsMap) return;
+      const boardData = boardsMap.get(spiritBoardId) as any;
+      if (!boardData) return;
+      const spiritState = boardData.get('spiritState');
+      if (!(spiritState instanceof Y.Map)) return;
+      const onIsland = typeof spiritState.get('presenceOnIsland') === 'number'
+        ? Math.max(0, (spiritState.get('presenceOnIsland') as number) - 1)
+        : 0;
+      const destroyed = typeof spiritState.get('presenceDestroyed') === 'number'
+        ? (spiritState.get('presenceDestroyed') as number) + 1
+        : 1;
+      spiritState.set('presenceOnIsland', onIsland);
+      spiritState.set('presenceDestroyed', destroyed);
+    }, 'presence-destroy');
+  };
+
+  const handleDropOnZone = (zone: 'remove' | 'destroy', piece: GamePiece, location: PieceLocation) => {
+    deletePieceAtLocation(location);
+    if (piece.type === 'presence') {
+      returnPresenceToDestroyedPile(piece);
+    }
+    if (zone === 'destroy') {
+      const fearAmount = piece.type === 'town' ? 1 : piece.type === 'city' ? 2 : 0;
+      if (fearAmount > 0) {
+        addFear(fearAmount);
+      }
+    }
   };
 
   const movePiece = (from: PieceLocation, to: { boardId: string; landId: string }) => {
@@ -986,10 +1081,34 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
       const pointerStageY = e.clientY - rect.top + canvasRef.current!.scrollTop;
       const pointerWorld = toWorldPoint(pointerStageX, pointerStageY);
       setDraggingPieceWorldPoint(pointerWorld);
+
+      // Track drop zone hover for visual feedback
+      const dropZoneEl = document
+        .elementsFromPoint(e.clientX, e.clientY)
+        .find((el): el is HTMLElement => el instanceof HTMLElement && !!el.dataset.dropZone);
+      setHoveredDropZone((dropZoneEl?.dataset.dropZone as 'remove' | 'destroy' | null) ?? null);
     };
 
     const handleMouseUp = (e: MouseEvent) => {
+      setHoveredDropZone(null);
       if (draggingPiece) {
+        // Check if dropped on a remove/destroy zone
+        const dropZoneEl = document
+          .elementsFromPoint(e.clientX, e.clientY)
+          .find((el): el is HTMLElement => el instanceof HTMLElement && !!el.dataset.dropZone);
+        const dropZone = dropZoneEl?.dataset.dropZone as 'remove' | 'destroy' | undefined;
+        if (dropZone === 'remove' || dropZone === 'destroy') {
+          handleDropOnZone(dropZone, draggingPiece.piece, {
+            boardId: draggingPiece.boardId,
+            landId: draggingPiece.landId,
+            pieceIndex: draggingPiece.pieceIndex,
+          });
+          setPendingPiecePointer(null);
+          setDraggingPiece(null);
+          setDraggingPieceWorldPoint(null);
+          return;
+        }
+
         const rect = canvasRef.current!.getBoundingClientRect();
         const pointerStageX = e.clientX - rect.left + canvasRef.current!.scrollLeft;
         const pointerStageY = e.clientY - rect.top + canvasRef.current!.scrollTop;
@@ -1651,7 +1770,11 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
       {/* Piece Palette Overlay */}
       <div className="pointer-events-none absolute bottom-2 left-2 right-2 z-20">
       <div className="pointer-events-auto inline-flex max-w-full flex-col gap-2 rounded border border-slate-200/60 bg-white/85 p-2 backdrop-blur-sm">
-        <span className="text-sm font-semibold text-slate-700">Drag to place:</span>
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-semibold text-slate-700">Drag to place:</span>
+          <div className="h-4 w-px bg-slate-300" />
+          <span className="text-xs font-semibold text-slate-500">Drop zones:</span>
+        </div>
 
         <div className="flex flex-wrap gap-2 items-center">
           {/* Explorer */}
@@ -1790,6 +1913,38 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
               {img && <img src={src} alt={label} style={{ width: 40, height: 40, objectFit: 'contain' }} />}
             </div>
           ))}
+          {/* Drop zones — always visible, glow when dragging a board piece */}
+          <div className="ml-1 flex items-center gap-2">
+            <div className="h-10 w-px bg-slate-300" />
+            <div
+              data-drop-zone="remove"
+              className={`flex h-14 w-14 shrink-0 flex-col items-center justify-center rounded-full border-2 transition select-none ${
+                hoveredDropZone === 'remove' && draggingPiece
+                  ? 'border-orange-500 bg-orange-100 shadow-lg shadow-orange-200'
+                  : draggingPiece
+                  ? 'border-orange-300 bg-orange-50'
+                  : 'border-slate-300 bg-white'
+              }`}
+              title="Drop piece here to remove from board (presence → destroyed pile)"
+            >
+              <span className="text-lg leading-none pointer-events-none">🗑️</span>
+              <span className="text-[9px] font-semibold leading-tight text-slate-600 pointer-events-none">Remove</span>
+            </div>
+            <div
+              data-drop-zone="destroy"
+              className={`flex h-14 w-14 shrink-0 flex-col items-center justify-center rounded-full border-2 transition select-none ${
+                hoveredDropZone === 'destroy' && draggingPiece
+                  ? 'border-red-500 bg-red-100 shadow-lg shadow-red-200'
+                  : draggingPiece
+                  ? 'border-red-300 bg-red-50'
+                  : 'border-slate-300 bg-white'
+              }`}
+              title="Drop piece here to destroy (+1 fear for towns, +2 fear for cities)"
+            >
+              <span className="text-lg leading-none pointer-events-none">💥</span>
+              <span className="text-[9px] font-semibold leading-tight text-slate-600 pointer-events-none">Destroy</span>
+            </div>
+          </div>
         </div>
       </div>
       </div>

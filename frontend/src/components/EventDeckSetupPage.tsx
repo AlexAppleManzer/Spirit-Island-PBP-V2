@@ -46,7 +46,10 @@ const EventDeckSetupPage: React.FC<EventDeckSetupPageProps> = ({ docRef }) => {
     doc.transact(() => {
       const gameMap = doc.getMap('game') as Y.Map<unknown>;
       if (!Array.isArray(gameMap.get('eventDeckCards'))) {
-        gameMap.set('eventDeckCards', createShuffledEventCardDeck());
+        const gc = gameMap.get('gameConfig');
+        const adversaryId = gc instanceof Y.Map ? (gc.get('adversary') as string | undefined) : undefined;
+        const adversaryLevel = gc instanceof Y.Map ? (gc.get('adversaryLevel') as number | undefined) : undefined;
+        gameMap.set('eventDeckCards', createShuffledEventCardDeck(adversaryId, adversaryLevel));
       }
       if (!Array.isArray(gameMap.get('eventRemovedCards'))) {
         gameMap.set('eventRemovedCards', []);
@@ -132,7 +135,10 @@ const EventDeckSetupPage: React.FC<EventDeckSetupPageProps> = ({ docRef }) => {
 
   const resetEventDeck = () => {
     withGameMap((gameMap) => {
-      const resetDeck = createShuffledEventCardDeck();
+      const gc = gameMap.get('gameConfig');
+      const adversaryId = gc instanceof Y.Map ? (gc.get('adversary') as string | undefined) : undefined;
+      const adversaryLevel = gc instanceof Y.Map ? (gc.get('adversaryLevel') as number | undefined) : undefined;
+      const resetDeck = createShuffledEventCardDeck(adversaryId, adversaryLevel);
       gameMap.set('eventDeckCards', resetDeck);
       gameMap.set('eventRemovedCards', []);
       gameMap.set('eventDiscardCards', []);

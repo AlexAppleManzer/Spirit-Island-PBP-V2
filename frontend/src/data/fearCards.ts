@@ -1,6 +1,11 @@
 import { type DeckCardDefinition } from './deckCard';
 
-export type FearCardDefinition = DeckCardDefinition;
+export type FearCardDefinition = DeckCardDefinition & {
+  /** Russia L5+: this slot holds an invader card that auto-places in Build when revealed */
+  embeddedInvaderStage?: 2 | 3;
+  /** Russia L5+: the specific invader card ID embedded in this fear deck slot */
+  embeddedInvaderCardId?: string;
+};
 
 export const FEAR_CARDS: FearCardDefinition[] = [
   {
