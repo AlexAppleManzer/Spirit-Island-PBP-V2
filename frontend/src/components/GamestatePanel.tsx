@@ -773,7 +773,7 @@ const DiscardPileSection = ({
   </div>
 );
 
-const BACKEND_URL = 'http://localhost:3001';
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:3001';
 
 const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef, selectedBoardId, isOwner, gameId, token }) => {
   const [snapshot, setSnapshot] = useState<GamestateSnapshot>(initialSnapshot);

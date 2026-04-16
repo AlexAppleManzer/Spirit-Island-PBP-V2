@@ -144,7 +144,8 @@ const BoardPage: React.FC<BoardPageProps> = ({ gameId, game, userId, token, onBa
     const roomName = `game-${gameId}`;
     
     const doc = new Y.Doc();
-    const provider = new WebsocketProvider('ws://localhost:3001', roomName, doc);
+    const backendWsUrl = (import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:3001').replace(/^http/, 'ws');
+    const provider = new WebsocketProvider(backendWsUrl, roomName, doc);
     docRef.current = doc;
     providerRef.current = provider;
     

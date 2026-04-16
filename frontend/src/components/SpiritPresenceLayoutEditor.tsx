@@ -20,7 +20,7 @@ type Layout = {
   updatedAt: string;
 };
 
-const BACKEND_URL = 'http://localhost:3001';
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:3001';
 const LAYOUT_MODEL_SIZE = 440;
 
 const DEFAULT_BASE_ENERGY_GAIN = 0;

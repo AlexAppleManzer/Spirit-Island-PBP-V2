@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import BoardPage from './pages/BoardPage';
 import SpiritPresenceLayoutEditor from './components/SpiritPresenceLayoutEditor';
 
-const BACKEND_URL = 'http://localhost:3001';
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:3001';
 
 type User = {
   id: number;

@@ -521,7 +521,7 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
     }
 
     let foundLand = false;
-    boardsMap.forEach((boardData: any, boardId: string) => {
+    boardsMap.forEach((boardData: any, _boardId: string) => {
       if (foundLand) return;
 
       const boardX = boardData.get('x') || 0;
