@@ -213,7 +213,7 @@ const SpiritPresenceLayoutEditor: React.FC = () => {
   useEffect(() => {
     const selected = layouts[selectedSpiritId];
     if (selected?.slots?.length === 13) {
-      setSlots(selected.slots.map((slot) => ({ x: slot.x, y: slot.y, reward: slot.reward, effects: [...slot.effects] })));
+      setSlots(selected.slots.map((slot) => ({ x: slot.x, y: slot.y, reward: slot.reward, effects: [...(slot.effects ?? [])] })));
       setBaseEnergyGain(clampInt(selected.baseEnergyGain, 0, 20));
       setBaseCardPlays(clampInt(selected.baseCardPlays, 0, 20));
       setBaseElements(normalizeBaseElements(selected.baseElements));
@@ -445,6 +445,21 @@ const SpiritPresenceLayoutEditor: React.FC = () => {
           <h2 className="text-xl font-semibold text-slate-900">Spirit Progression Editor</h2>
           <p className="text-sm text-slate-500">Configure base spirit stats plus per-slot permanent effects. Drag the 13 disks directly on the panel image.</p>
         </div>
+        <button
+          type="button"
+          onClick={() => {
+            const blob = new Blob([JSON.stringify({ layouts: Object.values(layouts) }, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'spiritPresenceLayouts.json';
+            a.click();
+            URL.revokeObjectURL(url);
+          }}
+          className="shrink-0 rounded border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+        >
+          Download All Layouts
+        </button>
       </div>
 
       <div className="grid gap-6 lg:grid-cols-[360px_minmax(0,1fr)]">

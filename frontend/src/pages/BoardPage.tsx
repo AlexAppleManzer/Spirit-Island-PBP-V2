@@ -36,7 +36,7 @@ interface BoardPageProps {
 const BoardPage: React.FC<BoardPageProps> = ({ gameId, game, userId, token, onBack }) => {
   const [wsConnected, setWsConnected] = useState(false);
   const [docReady, setDocReady] = useState(false);
-  const [error] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [subpage, setSubpage] = useState<'board' | 'spirit' | 'invader-setup' | 'event-setup'>('board');
   const [boardToolbarState, setBoardToolbarState] = useState({ manageBoardsMode: false, zoomPercent: 100 });
   const [resizeModeEnabled, setResizeModeEnabled] = useState(false);
@@ -144,13 +144,12 @@ const BoardPage: React.FC<BoardPageProps> = ({ gameId, game, userId, token, onBa
     }
 
     const roomName = `game-${gameId}`;
-    
+
     const doc = new Y.Doc();
     const backendWsUrl = (import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:3001').replace(/^http/, 'ws');
     const provider = new WebsocketProvider(backendWsUrl, roomName, doc);
     docRef.current = doc;
     providerRef.current = provider;
-    setDocReady(true);
 
     console.log('[BoardPage] Creating WebSocket provider for', roomName);
     setWsConnected(provider.wsconnected);
@@ -160,11 +159,28 @@ const BoardPage: React.FC<BoardPageProps> = ({ gameId, game, userId, token, onBa
       setWsConnected(provider.wsconnected);
     };
 
+    // Wait for the initial sync to complete before showing the board.
+    // After sync, verify the server actually sent game state (boards must exist).
+    // If the server has no state the board would silently appear empty — error
+    // instead so the problem is visible.
+    const syncedHandler = (isSynced: boolean) => {
+      if (!isSynced) return;
+      const gameMap = doc.getMap('game');
+      const boards = gameMap.get('boards');
+      if (!(boards instanceof Y.Map) || boards.size === 0) {
+        setError('Game state not found on server. The game may not have been initialized correctly. Please ask the owner to recreate the game.');
+        return;
+      }
+      setDocReady(true);
+    };
+
     provider.on('status', statusHandler);
+    provider.on('synced', syncedHandler);
 
     return () => {
       console.log('[BoardPage] Effect cleanup for', roomName);
       provider.off('status', statusHandler);
+      provider.off('synced', syncedHandler);
     };
   }, [gameId]);
 
@@ -301,14 +317,20 @@ const BoardPage: React.FC<BoardPageProps> = ({ gameId, game, userId, token, onBa
 
       {/* Board Area */}
       <main className="min-h-0 flex-1 overflow-hidden p-0">
-        {error && (
-          <div className="mb-4 rounded-lg bg-red-50 p-4 text-red-700">
-            <p className="font-semibold">Error</p>
-            <p className="text-sm">{error}</p>
+        {error ? (
+          <div className="flex h-full flex-col items-center justify-center gap-4 p-8">
+            <div className="w-full max-w-md rounded-lg bg-red-50 p-5 text-red-700">
+              <p className="font-semibold">Failed to load game</p>
+              <p className="mt-1 text-sm">{error}</p>
+            </div>
+            <button
+              onClick={onBack}
+              className="rounded border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100"
+            >
+              Back to Lobby
+            </button>
           </div>
-        )}
-
-        {!docReady ? (
+        ) : !docReady ? (
           <div className="flex h-full items-center justify-center text-sm text-slate-400">
             Connecting…
           </div>
