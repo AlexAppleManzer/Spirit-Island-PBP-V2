@@ -500,7 +500,7 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
     const isBlightFromCard = externalPieceType === 'blight-from-card';
     const isPresenceFromPanel = externalPieceType === 'presence-from-panel';
     const isPresenceDestroyedFromPanel = externalPieceType === 'presence-destroyed-from-panel';
-    const spiritBoardId = (isPresenceFromPanel || isPresenceDestroyedFromPanel) ? e.dataTransfer.getData('spirit-board-id') : '';
+    const spiritId = (isPresenceFromPanel || isPresenceDestroyedFromPanel) ? e.dataTransfer.getData('spirit-id') : '';
     const spiritSlotIndexRaw = isPresenceFromPanel ? e.dataTransfer.getData('spirit-slot-index') : '';
     const spiritSlotIndex = Number.parseInt(spiritSlotIndexRaw, 10);
     const spiritSlotRewardRaw = isPresenceFromPanel ? e.dataTransfer.getData('spirit-slot-reward') : '';
@@ -583,7 +583,7 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
             const newPiece: GamePiece = {
               pieceId: `${activePieceType}-${Date.now()}-${Math.floor(Math.random() * 1000000)}`,
               type: activePieceType,
-              subtype: activePieceType === 'presence' ? spiritBoardId : activePieceType,
+              subtype: activePieceType === 'presence' ? spiritId : activePieceType,
               presenceSlotIndex: activePieceType === 'presence' && hasPresenceSlotIndex ? spiritSlotIndex : undefined,
               presenceReward: activePieceType === 'presence' && spiritSlotReward.length > 0 ? spiritSlotReward : undefined,
               damage: getDefaultDamage(activePieceType),
@@ -610,10 +610,10 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
     }
 
     // When presence is dragged from the spirit panel, decrement presenceInSupply
-    if (isPresenceFromPanel && foundLand && spiritBoardId) {
+    if (isPresenceFromPanel && foundLand && spiritId) {
       const spiritsMap2 = gameMap.get('spirits') as Y.Map<any> | undefined;
       if (spiritsMap2) {
-        const spiritData = spiritsMap2.get(spiritBoardId) as any;
+        const spiritData = spiritsMap2.get(spiritId) as any;
         if (spiritData instanceof Y.Map) {
           const rawSupplySlots = spiritData.get('presenceSupplySlotIndices');
           const currentSupplySlots = Array.isArray(rawSupplySlots)
@@ -639,10 +639,10 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
     }
 
     // When a destroyed presence is dragged back onto the island, decrement presenceDestroyed
-    if (isPresenceDestroyedFromPanel && foundLand && spiritBoardId) {
+    if (isPresenceDestroyedFromPanel && foundLand && spiritId) {
       const spiritsMapDP = gameMap.get('spirits') as Y.Map<any> | undefined;
       if (spiritsMapDP) {
-        const spiritDataDP = spiritsMapDP.get(spiritBoardId) as any;
+        const spiritDataDP = spiritsMapDP.get(spiritId) as any;
         if (spiritDataDP instanceof Y.Map) {
           doc.transact(() => {
             const currentDestroyed = typeof spiritDataDP.get('presenceDestroyed') === 'number'
@@ -1126,14 +1126,14 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
           );
         } else if (draggingPiece.piece.type === 'presence') {
           // Drag presence off a land → return it to the spirit panel
-          const spiritBoardId2 = draggingPiece.piece.subtype ?? draggingPiece.boardId;
+          const spiritId = draggingPiece.piece.subtype ?? draggingPiece.boardId;
           const slotDropTarget = document
             .elementsFromPoint(e.clientX, e.clientY)
             .find((element) => {
               if (!(element instanceof HTMLElement)) {
                 return false;
               }
-              if (element.dataset.spiritBoardId !== spiritBoardId2) {
+              if (element.dataset.spiritId !== spiritId) {
                 return false;
               }
               return typeof element.dataset.presenceSlotIndex === 'string';
@@ -1159,7 +1159,7 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
             doc2.transact(() => {
               const spirits2 = gameMap2.get('spirits') as Y.Map<unknown> | undefined;
               if (!(spirits2 instanceof Y.Map)) return;
-              const spiritData2 = spirits2.get(spiritBoardId2) as Y.Map<unknown> | undefined;
+              const spiritData2 = spirits2.get(spiritId) as Y.Map<unknown> | undefined;
               if (!(spiritData2 instanceof Y.Map)) return;
               const inSupply = typeof spiritData2.get('presenceInSupply') === 'number'
                 ? (spiritData2.get('presenceInSupply') as number)

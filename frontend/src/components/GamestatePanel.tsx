@@ -31,7 +31,7 @@ type ForgottenPowerCard = {
   faceUrl: string;
   backUrl: string;
   kind: 'minor' | 'major' | 'unique';
-  sourceBoardId?: string;
+  sourceSpiritId?: string;
 };
 
 type InvaderTrackCards = {

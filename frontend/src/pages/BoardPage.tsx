@@ -175,12 +175,12 @@ const BoardPage: React.FC<BoardPageProps> = ({ gameId, game, userId, token, onBa
     };
 
     provider.on('status', statusHandler);
-    provider.on('synced', syncedHandler);
+    (provider as any).on('synced', syncedHandler);
 
     return () => {
       console.log('[BoardPage] Effect cleanup for', roomName);
       provider.off('status', statusHandler);
-      provider.off('synced', syncedHandler);
+      (provider as any).off('synced', syncedHandler);
     };
   }, [gameId]);
 

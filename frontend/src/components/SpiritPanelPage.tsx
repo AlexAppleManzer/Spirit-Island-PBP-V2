@@ -22,7 +22,7 @@ type ForgottenPowerCard = {
   faceUrl: string;
   backUrl: string;
   kind: 'minor' | 'major' | 'unique';
-  sourceBoardId?: string;
+  sourceSpiritId?: string;
 };
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:3001';
@@ -181,7 +181,7 @@ const parseForgottenPowerCardList = (value: unknown): ForgottenPowerCard[] => {
       typeof card.name === 'string' &&
       typeof card.faceUrl === 'string' &&
       typeof card.backUrl === 'string' &&
-      (card.sourceBoardId === undefined || typeof card.sourceBoardId === 'string') &&
+      (card.sourceSpiritId === undefined || typeof card.sourceSpiritId === 'string') &&
       (card.kind === 'minor' || card.kind === 'major' || card.kind === 'unique')
     );
   }) as ForgottenPowerCard[];
@@ -692,7 +692,7 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
     });
   };
 
-  const discardUnpickedDraftCards = (gameMap: Y.Map<unknown>, unpickedIds: string[], kind: 'minor' | 'major', boardId: string) => {
+  const discardUnpickedDraftCards = (gameMap: Y.Map<unknown>, unpickedIds: string[], kind: 'minor' | 'major', spiritSlotId: string) => {
     const forgottenPileKey = kind === 'minor' ? 'forgottenMinorPowerCards' : 'forgottenMajorPowerCards';
     const currentForgotten = parseForgottenPowerCardList(gameMap.get(forgottenPileKey));
     const existingIds = new Set(currentForgotten.map((c) => c.id));
@@ -700,7 +700,7 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
       .filter((id) => !existingIds.has(id))
       .map((id) => FORGETTABLE_POWER_CARD_BY_ID.get(id))
       .filter((c): c is ForgottenPowerCard => c !== undefined)
-      .map((c) => ({ ...c, sourceBoardId: boardId }));
+      .map((c) => ({ ...c, sourceSpiritId: spiritSlotId }));
     if (toAdd.length > 0) {
       gameMap.set(forgottenPileKey, [...currentForgotten, ...toAdd]);
     }
@@ -815,7 +815,7 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
         return;
       }
 
-      gameMap.set(forgottenPileKey, [...currentForgottenPile, { ...forgottenCard, sourceBoardId: spiritSlotId }]);
+      gameMap.set(forgottenPileKey, [...currentForgottenPile, { ...forgottenCard, sourceSpiritId: spiritSlotId }]);
     });
   };
 
@@ -829,7 +829,7 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
     setIsAddingSpirit(true);
   };
 
-  const assignSpiritToSlot = (spiritIdToAdd: string, targetSlotId: string, boardType: string | null) => {
+  const assignSpiritToSlot = (spiritIdToAdd: string, targetSlotId: string) => {
     withGameMap((gameMap) => {
       const spirits = gameMap.get('spirits') as Y.Map<unknown> | undefined;
       if (!(spirits instanceof Y.Map)) return;
@@ -869,16 +869,6 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
       spiritData.set('pendingDraftCardIds', []);
       spiritData.set('pendingDraftPicksRemaining', 0);
 
-      if (boardType !== null) {
-        const boards = gameMap.get('boards') as Y.Map<unknown> | undefined;
-        if (boards instanceof Y.Map) {
-          const boardMap = boards.get(targetSlotId) as Y.Map<unknown> | undefined;
-          if (boardMap instanceof Y.Map) {
-            boardMap.set('boardType', boardType);
-          }
-        }
-      }
-
       let filledCount = 0;
       spirits.forEach((sd) => {
         if (!(sd instanceof Y.Map)) return;
@@ -898,7 +888,7 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
     if (!spiritToAddId) return;
     const allSlotIds = [...spiritStates.map((s) => s.spiritSlotId), ...emptySlotIds];
     const targetSlotId = emptySlotIds[0] ?? getNextSpiritSlotId(allSlotIds);
-    assignSpiritToSlot(spiritToAddId, targetSlotId, null);
+    assignSpiritToSlot(spiritToAddId, targetSlotId);
     setIsAddingSpirit(false);
   };
 
@@ -1654,7 +1644,7 @@ const FullSpiritView: React.FC<FullSpiritViewProps> = ({
                   onDragStart={(e) => {
                     e.dataTransfer.effectAllowed = 'copy';
                     e.dataTransfer.setData('piece-type', 'presence-from-panel');
-                    e.dataTransfer.setData('spirit-board-id', selectedState.spiritSlotId);
+                    e.dataTransfer.setData('spirit-id', selectedState.spiritSlotId);
                     e.dataTransfer.setData('spirit-slot-index', String(slotIndex));
                     e.dataTransfer.setData('spirit-slot-reward', slot.reward ?? '');
                   }}
@@ -1771,7 +1761,7 @@ const FullSpiritView: React.FC<FullSpiritViewProps> = ({
               onDragStart={(e) => {
                 e.dataTransfer.effectAllowed = 'copy';
                 e.dataTransfer.setData('piece-type', 'presence-destroyed-from-panel');
-                e.dataTransfer.setData('spirit-board-id', selectedState.spiritSlotId);
+                e.dataTransfer.setData('spirit-id', selectedState.spiritSlotId);
               }}
               className="cursor-grab"
               title="Drag onto a board land to re-add this presence to the island"
