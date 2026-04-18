@@ -1953,10 +1953,12 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
       </div>
 
       {showBoardPicker && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-2xl">
-            <h3 className="text-lg font-semibold text-slate-900">Add Board</h3>
-            <p className="mt-1 text-sm text-slate-500">Select a board or add a random one. Each board can only appear once.</p>
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ backgroundColor: 'rgba(0,0,0,0.6)' }}>
+          <div className="w-full max-w-md rounded-lg p-6 shadow-2xl" style={{ backgroundColor: 'rgba(30, 32, 40, 0.72)', border: '1px solid rgba(255,255,255,0.15)', backdropFilter: 'blur(8px)' }}>
+            <div className="mb-4 rounded-md px-4 py-3" style={{ backgroundColor: 'rgba(255,255,255,0.08)' }}>
+              <h3 className="text-lg font-semibold" style={{ color: '#ffffff' }}>Add Board</h3>
+              <p className="mt-1 text-sm" style={{ color: '#e2e8f0' }}>Select a board or add a random one. Each board can only appear once.</p>
+            </div>
 
             <div className="mt-4 grid grid-cols-4 gap-2">
               {BOARDS.map((board) => {

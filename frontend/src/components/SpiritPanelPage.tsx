@@ -638,10 +638,9 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
 
   const drawFromSharedPile = (gameMap: Y.Map<unknown>, kind: 'minor' | 'major', count: number): string[] => {
     const drawKey = kind === 'minor' ? 'minorPowerDrawPile' : 'majorPowerDrawPile';
-    const discardKey = kind === 'minor' ? 'minorPowerDiscardPile' : 'majorPowerDiscardPile';
+    const forgottenKey = kind === 'minor' ? 'forgottenMinorPowerCards' : 'forgottenMajorPowerCards';
 
     let drawPile = parseStringArray(gameMap.get(drawKey));
-    let discardPile = parseStringArray(gameMap.get(discardKey));
 
     if (!Array.isArray(gameMap.get(drawKey))) {
       const allIds = (kind === 'minor' ? MINOR_POWER_CARDS : MAJOR_POWER_CARDS).map((c) => c.id);
@@ -656,17 +655,18 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
         });
       }
       drawPile = shuffleArray(allIds.filter((id) => !owned.has(id)));
-      discardPile = [];
     }
 
-    if (drawPile.length < count && discardPile.length > 0) {
-      drawPile = shuffleArray([...drawPile, ...discardPile]);
-      discardPile = [];
+    if (drawPile.length < count) {
+      const forgottenCards = parseForgottenPowerCardList(gameMap.get(forgottenKey));
+      if (forgottenCards.length > 0) {
+        drawPile = shuffleArray([...drawPile, ...forgottenCards.map((c) => c.id)]);
+        gameMap.set(forgottenKey, []);
+      }
     }
 
     const drawn = drawPile.slice(0, Math.max(0, count));
     gameMap.set(drawKey, drawPile.slice(drawn.length));
-    gameMap.set(discardKey, discardPile);
     return drawn;
   };
 
@@ -692,17 +692,16 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
     });
   };
 
-  const discardUnpickedDraftCards = (gameMap: Y.Map<unknown>, unpickedIds: string[], kind: 'minor' | 'major', spiritSlotId: string) => {
-    const forgottenPileKey = kind === 'minor' ? 'forgottenMinorPowerCards' : 'forgottenMajorPowerCards';
-    const currentForgotten = parseForgottenPowerCardList(gameMap.get(forgottenPileKey));
+  const discardUnpickedDraftCards = (gameMap: Y.Map<unknown>, unpickedIds: string[], kind: 'minor' | 'major') => {
+    const forgottenKey = kind === 'minor' ? 'forgottenMinorPowerCards' : 'forgottenMajorPowerCards';
+    const currentForgotten = parseForgottenPowerCardList(gameMap.get(forgottenKey));
     const existingIds = new Set(currentForgotten.map((c) => c.id));
     const toAdd = unpickedIds
       .filter((id) => !existingIds.has(id))
       .map((id) => FORGETTABLE_POWER_CARD_BY_ID.get(id))
-      .filter((c): c is ForgottenPowerCard => c !== undefined)
-      .map((c) => ({ ...c, sourceSpiritId: spiritSlotId }));
+      .filter((c): c is ForgottenPowerCard => c !== undefined);
     if (toAdd.length > 0) {
-      gameMap.set(forgottenPileKey, [...currentForgotten, ...toAdd]);
+      gameMap.set(forgottenKey, [...currentForgotten, ...toAdd]);
     }
   };
 
@@ -721,7 +720,7 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
         : [];
 
       if (pendingDraftType && offered.length > 0) {
-        discardUnpickedDraftCards(gameMap, offered, pendingDraftType, spiritSlotId);
+        discardUnpickedDraftCards(gameMap, offered, pendingDraftType);
       }
 
       spiritData.set('pendingDraftType', null);
@@ -765,7 +764,7 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
 
       if (picksRemaining <= 0 || remainingOffered.length === 0) {
         if (remainingOffered.length > 0) {
-          discardUnpickedDraftCards(gameMap, remainingOffered, pendingDraftType, spiritSlotId);
+          discardUnpickedDraftCards(gameMap, remainingOffered, pendingDraftType);
         }
         spiritData.set('pendingDraftType', null);
         spiritData.set('pendingDraftCardIds', []);
