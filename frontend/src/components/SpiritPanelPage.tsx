@@ -33,8 +33,7 @@ const SPIRIT_SECTION_MAX_PERCENT = 70;
 const SPIRIT_SECTION_RESIZER_THICKNESS = 8;
 
 type SpiritState = {
-  boardId: string;
-  playerId: number;
+  spiritSlotId: string;
   spiritId: string;
   energy: number;
   turn: number;
@@ -67,7 +66,7 @@ type SpiritPanelPageProps = {
   onToggleSpiritPanelHeight?: () => void;
   spiritPanelExpanded?: boolean;
   resizeModeEnabled?: boolean;
-  onSelectedBoardChange?: (boardId: string | null) => void;
+  onSelectedSpiritChange?: (spiritSlotId: string | null) => void;
 };
 
 const getSafeNumber = (value: unknown, fallback: number) => {
@@ -152,6 +151,20 @@ const FORGETTABLE_POWER_CARD_BY_ID = new Map<string, ForgottenPowerCard>([
 const MINOR_POWER_CARD_BY_ID = new Map(MINOR_POWER_CARDS.map((card) => [card.id, card] as const));
 const MAJOR_POWER_CARD_BY_ID = new Map(MAJOR_POWER_CARDS.map((card) => [card.id, card] as const));
 
+const parseStringArray = (raw: unknown): string[] => {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((item) => typeof item === 'string');
+};
+
+const shuffleArray = <T,>(arr: T[]): T[] => {
+  const out = [...arr];
+  for (let i = out.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+};
+
 
 const parseForgottenPowerCardList = (value: unknown): ForgottenPowerCard[] => {
   if (!Array.isArray(value)) {
@@ -174,25 +187,34 @@ const parseForgottenPowerCardList = (value: unknown): ForgottenPowerCard[] => {
   }) as ForgottenPowerCard[];
 };
 
+const SPIRIT_SLOT_LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
+
+const getNextSpiritSlotId = (existingIds: string[]): string => {
+  for (let i = 0; i < SPIRIT_SLOT_LETTERS.length; i++) {
+    const candidate = SPIRIT_SLOT_LETTERS[i] ?? `S${i + 1}`;
+    if (!existingIds.includes(candidate)) return candidate;
+  }
+  return `S${existingIds.length + 1}`;
+};
+
 const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
   docRef,
   mode = 'full',
   onToggleSpiritPanelHeight,
   spiritPanelExpanded = false,
   resizeModeEnabled = false,
-  onSelectedBoardChange,
+  onSelectedSpiritChange,
 }) => {
   const [spiritStates, setSpiritStates] = useState<SpiritState[]>([]);
-  const [emptyBoardIds, setEmptyBoardIds] = useState<string[]>([]);
-  const [selectedBoardId, setSelectedBoardId] = useState<string | null>(null);
+  const [emptySlotIds, setEmptySlotIds] = useState<string[]>([]);
+  const [selectedSlotId, setSelectedSlotId] = useState<string | null>(null);
 
-  const selectBoard = (boardId: string | null) => {
-    setSelectedBoardId(boardId);
-    onSelectedBoardChange?.(boardId);
+  const selectSpirit = (spiritSlotId: string | null) => {
+    setSelectedSlotId(spiritSlotId);
+    onSelectedSpiritChange?.(spiritSlotId);
   };
   const [isAddingSpirit, setIsAddingSpirit] = useState(false);
   const [spiritToAddId, setSpiritToAddId] = useState(SPIRITS[0]?.id ?? '');
-  const [targetBoardId, setTargetBoardId] = useState<string | null>(null);
   const [layoutsBySpirit, setLayoutsBySpirit] = useState<Record<string, SpiritLayout>>({});
   const [panelAspectRatios, setPanelAspectRatios] = useState<Record<string, number>>({});
   const lastTurnKeyRef = useRef<string | null>(null);
@@ -220,33 +242,31 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
       const turnKey = `${turn}:${round}`;
       const stateKey = `${turn}:${round}:${currentPhase}`;
 
-      const resetBoards = (resetAll: boolean) => {
-        const boards = gameMap.get('boards') as Y.Map<unknown> | undefined;
-        if (!(boards instanceof Y.Map)) return;
-        boards.forEach((boardData) => {
-          if (!(boardData instanceof Y.Map)) return;
-          const spiritState = boardData.get('spiritState');
-          if (!(spiritState instanceof Y.Map)) return;
+      const resetSpirits = (resetAll: boolean) => {
+        const spirits = gameMap.get('spirits') as Y.Map<unknown> | undefined;
+        if (!(spirits instanceof Y.Map)) return;
+        spirits.forEach((spiritData) => {
+          if (!(spiritData instanceof Y.Map)) return;
           if (resetAll) {
-            spiritState.set('gainMarkedTurn', 0);
-            spiritState.set('gainMarkedRound', 0);
-            spiritState.set('paidMarkedTurn', 0);
-            spiritState.set('paidMarkedRound', 0);
-            spiritState.set('paidAmount', 0);
+            spiritData.set('gainMarkedTurn', 0);
+            spiritData.set('gainMarkedRound', 0);
+            spiritData.set('paidMarkedTurn', 0);
+            spiritData.set('paidMarkedRound', 0);
+            spiritData.set('paidAmount', 0);
           }
-          spiritState.set('ready', false);
+          spiritData.set('ready', false);
         });
       };
 
       if (lastTurnKeyRef.current !== null && lastTurnKeyRef.current !== turnKey) {
-        doc.transact(() => resetBoards(true));
+        doc.transact(() => resetSpirits(true));
         lastTurnKeyRef.current = turnKey;
         lastStateKeyRef.current = stateKey;
         return;
       }
 
       if (lastStateKeyRef.current !== null && lastStateKeyRef.current !== stateKey) {
-        doc.transact(() => resetBoards(false));
+        doc.transact(() => resetSpirits(false));
         lastStateKeyRef.current = stateKey;
         return;
       }
@@ -254,99 +274,90 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
       lastTurnKeyRef.current = turnKey;
       lastStateKeyRef.current = stateKey;
 
-      const boards = gameMap.get('boards') as Y.Map<unknown> | undefined;
-      if (!(boards instanceof Y.Map)) {
+      const spirits = gameMap.get('spirits') as Y.Map<unknown> | undefined;
+      if (!(spirits instanceof Y.Map)) {
         setSpiritStates([]);
         return;
       }
 
       const nextStates: SpiritState[] = [];
-      const nextEmptyBoardIds: string[] = [];
+      const nextEmptySlotIds: string[] = [];
       let index = 0;
 
-      boards.forEach((boardData, boardId) => {
-        if (!(boardData instanceof Y.Map)) {
+      spirits.forEach((spiritData, spiritSlotId) => {
+        if (!(spiritData instanceof Y.Map)) {
+          nextEmptySlotIds.push(spiritSlotId);
           return;
         }
 
-        // Boards without a spiritId are "empty" — available for spirit assignment.
-        // Do NOT auto-assign a fallback spirit; just track the board as empty.
-        const spiritStateRaw = boardData.get('spiritState');
-        const spiritIdRaw = spiritStateRaw instanceof Y.Map ? spiritStateRaw.get('spiritId') : undefined;
+        const spiritIdRaw = spiritData.get('spiritId');
         const spiritId = typeof spiritIdRaw === 'string' && spiritIdRaw.length > 0 ? spiritIdRaw : null;
 
         if (!spiritId) {
-          nextEmptyBoardIds.push(boardId);
+          nextEmptySlotIds.push(spiritSlotId);
           return;
         }
 
-        // Board has an assigned spirit — ensure spiritState Y.Map exists.
-        let spiritState = spiritStateRaw as Y.Map<unknown>;
-        if (!(spiritState instanceof Y.Map)) {
-          spiritState = new Y.Map<unknown>();
-          boardData.set('spiritState', spiritState);
-        }
-
-        const energy = getSafeNumber(spiritState.get('energy'), 0);
-        const gainMarkedTurn = clampMin(getSafeNumber(spiritState.get('gainMarkedTurn'), 0), 0);
-        const gainMarkedRound = clampMin(getSafeNumber(spiritState.get('gainMarkedRound'), 0), 0);
-        const paidMarkedTurn = clampMin(getSafeNumber(spiritState.get('paidMarkedTurn'), 0), 0);
-        const paidMarkedRound = clampMin(getSafeNumber(spiritState.get('paidMarkedRound'), 0), 0);
-        const paidAmount = getSafeNumber(spiritState.get('paidAmount'), 0);
-        const legacyPresenceInSupply = clampMin(getSafeNumber(spiritState.get('presenceInSupply'), TOTAL_PRESENCE_SLOTS), 0);
+        const energy = getSafeNumber(spiritData.get('energy'), 0);
+        const gainMarkedTurn = clampMin(getSafeNumber(spiritData.get('gainMarkedTurn'), 0), 0);
+        const gainMarkedRound = clampMin(getSafeNumber(spiritData.get('gainMarkedRound'), 0), 0);
+        const paidMarkedTurn = clampMin(getSafeNumber(spiritData.get('paidMarkedTurn'), 0), 0);
+        const paidMarkedRound = clampMin(getSafeNumber(spiritData.get('paidMarkedRound'), 0), 0);
+        const paidAmount = getSafeNumber(spiritData.get('paidAmount'), 0);
+        const legacyPresenceInSupply = clampMin(getSafeNumber(spiritData.get('presenceInSupply'), TOTAL_PRESENCE_SLOTS), 0);
         const presenceSupplySlotIndices = parsePresenceSupplySlotIndices(
-          spiritState.get('presenceSupplySlotIndices'),
+          spiritData.get('presenceSupplySlotIndices'),
           legacyPresenceInSupply
         );
         const presenceInSupply = presenceSupplySlotIndices.length;
-        const presenceOnIsland = clampMin(getSafeNumber(spiritState.get('presenceOnIsland'), 0), 0);
-        const presenceDestroyed = clampMin(getSafeNumber(spiritState.get('presenceDestroyed'), 0), 0);
-        const presenceRemoved = clampMin(getSafeNumber(spiritState.get('presenceRemoved'), 0), 0);
-        const presenceColorRaw = spiritState.get('presenceColor');
+        const presenceOnIsland = clampMin(getSafeNumber(spiritData.get('presenceOnIsland'), 0), 0);
+        const presenceDestroyed = clampMin(getSafeNumber(spiritData.get('presenceDestroyed'), 0), 0);
+        const presenceRemoved = clampMin(getSafeNumber(spiritData.get('presenceRemoved'), 0), 0);
+        const presenceColorRaw = spiritData.get('presenceColor');
         const presenceColor = typeof presenceColorRaw === 'string' && presenceColorRaw.length > 0
           ? presenceColorRaw
           : DEFAULT_COLORS[index % DEFAULT_COLORS.length] ?? '#facc15';
 
         if (presenceColorRaw !== presenceColor) {
-          spiritState.set('presenceColor', presenceColor);
+          spiritData.set('presenceColor', presenceColor);
         }
 
-        if (getSafeNumber(spiritState.get('energy'), Number.NaN) !== energy) {
-          spiritState.set('energy', energy);
+        if (getSafeNumber(spiritData.get('energy'), Number.NaN) !== energy) {
+          spiritData.set('energy', energy);
         }
-        if (getSafeNumber(spiritState.get('gainMarkedTurn'), Number.NaN) !== gainMarkedTurn) {
-          spiritState.set('gainMarkedTurn', gainMarkedTurn);
+        if (getSafeNumber(spiritData.get('gainMarkedTurn'), Number.NaN) !== gainMarkedTurn) {
+          spiritData.set('gainMarkedTurn', gainMarkedTurn);
         }
-        if (getSafeNumber(spiritState.get('gainMarkedRound'), Number.NaN) !== gainMarkedRound) {
-          spiritState.set('gainMarkedRound', gainMarkedRound);
+        if (getSafeNumber(spiritData.get('gainMarkedRound'), Number.NaN) !== gainMarkedRound) {
+          spiritData.set('gainMarkedRound', gainMarkedRound);
         }
-        if (getSafeNumber(spiritState.get('paidMarkedTurn'), Number.NaN) !== paidMarkedTurn) {
-          spiritState.set('paidMarkedTurn', paidMarkedTurn);
+        if (getSafeNumber(spiritData.get('paidMarkedTurn'), Number.NaN) !== paidMarkedTurn) {
+          spiritData.set('paidMarkedTurn', paidMarkedTurn);
         }
-        if (getSafeNumber(spiritState.get('paidMarkedRound'), Number.NaN) !== paidMarkedRound) {
-          spiritState.set('paidMarkedRound', paidMarkedRound);
+        if (getSafeNumber(spiritData.get('paidMarkedRound'), Number.NaN) !== paidMarkedRound) {
+          spiritData.set('paidMarkedRound', paidMarkedRound);
         }
-        if (getSafeNumber(spiritState.get('paidAmount'), Number.NaN) !== paidAmount) {
-          spiritState.set('paidAmount', paidAmount);
+        if (getSafeNumber(spiritData.get('paidAmount'), Number.NaN) !== paidAmount) {
+          spiritData.set('paidAmount', paidAmount);
         }
-        const rawPresenceSupplySlotIndices = spiritState.get('presenceSupplySlotIndices');
+        const rawPresenceSupplySlotIndices = spiritData.get('presenceSupplySlotIndices');
         const rawPresenceSupplyMatches = Array.isArray(rawPresenceSupplySlotIndices)
           && rawPresenceSupplySlotIndices.length === presenceSupplySlotIndices.length
           && rawPresenceSupplySlotIndices.every((entry, entryIndex) => entry === presenceSupplySlotIndices[entryIndex]);
         if (!rawPresenceSupplyMatches) {
-          spiritState.set('presenceSupplySlotIndices', presenceSupplySlotIndices);
+          spiritData.set('presenceSupplySlotIndices', presenceSupplySlotIndices);
         }
-        if (getSafeNumber(spiritState.get('presenceInSupply'), Number.NaN) !== presenceInSupply) {
-          spiritState.set('presenceInSupply', presenceInSupply);
+        if (getSafeNumber(spiritData.get('presenceInSupply'), Number.NaN) !== presenceInSupply) {
+          spiritData.set('presenceInSupply', presenceInSupply);
         }
-        if (getSafeNumber(spiritState.get('presenceOnIsland'), Number.NaN) !== presenceOnIsland) {
-          spiritState.set('presenceOnIsland', presenceOnIsland);
+        if (getSafeNumber(spiritData.get('presenceOnIsland'), Number.NaN) !== presenceOnIsland) {
+          spiritData.set('presenceOnIsland', presenceOnIsland);
         }
-        if (getSafeNumber(spiritState.get('presenceDestroyed'), Number.NaN) !== presenceDestroyed) {
-          spiritState.set('presenceDestroyed', presenceDestroyed);
+        if (getSafeNumber(spiritData.get('presenceDestroyed'), Number.NaN) !== presenceDestroyed) {
+          spiritData.set('presenceDestroyed', presenceDestroyed);
         }
-        if (getSafeNumber(spiritState.get('presenceRemoved'), Number.NaN) !== presenceRemoved) {
-          spiritState.set('presenceRemoved', presenceRemoved);
+        if (getSafeNumber(spiritData.get('presenceRemoved'), Number.NaN) !== presenceRemoved) {
+          spiritData.set('presenceRemoved', presenceRemoved);
         }
 
         const parseStringArray = (raw: unknown): string[] => {
@@ -354,47 +365,46 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
           return raw.filter((item) => typeof item === 'string');
         };
 
-        const cardsInPlay = parseStringArray(spiritState.get('cardsInPlay'));
-        const cardsInHand = parseStringArray(spiritState.get('cardsInHand'));
-        const cardsInDiscard = parseStringArray(spiritState.get('cardsInDiscard'));
+        const cardsInPlay = parseStringArray(spiritData.get('cardsInPlay'));
+        const cardsInHand = parseStringArray(spiritData.get('cardsInHand'));
+        const cardsInDiscard = parseStringArray(spiritData.get('cardsInDiscard'));
         const draftSize = Math.min(
           MAX_DRAFT_SIZE,
-          Math.max(MIN_DRAFT_SIZE, Math.floor(getSafeNumber(spiritState.get('draftSize'), 4)))
+          Math.max(MIN_DRAFT_SIZE, Math.floor(getSafeNumber(spiritData.get('draftSize'), 4)))
         );
         const draftPicks = Math.min(
           MAX_DRAFT_PICKS,
-          Math.max(MIN_DRAFT_PICKS, Math.floor(getSafeNumber(spiritState.get('draftPicks'), 1)))
+          Math.max(MIN_DRAFT_PICKS, Math.floor(getSafeNumber(spiritData.get('draftPicks'), 1)))
         );
-        const pendingDraftTypeRaw = spiritState.get('pendingDraftType');
+        const pendingDraftTypeRaw = spiritData.get('pendingDraftType');
         const pendingDraftType =
           pendingDraftTypeRaw === 'minor' || pendingDraftTypeRaw === 'major' ? pendingDraftTypeRaw : null;
-        const pendingDraftCardIds = parseStringArray(spiritState.get('pendingDraftCardIds'));
+        const pendingDraftCardIds = parseStringArray(spiritData.get('pendingDraftCardIds'));
         const pendingDraftPicksRemaining = Math.max(
           0,
-          Math.floor(getSafeNumber(spiritState.get('pendingDraftPicksRemaining'), 0))
+          Math.floor(getSafeNumber(spiritData.get('pendingDraftPicksRemaining'), 0))
         );
 
-        if (getSafeNumber(spiritState.get('draftSize'), Number.NaN) !== draftSize) {
-          spiritState.set('draftSize', draftSize);
+        if (getSafeNumber(spiritData.get('draftSize'), Number.NaN) !== draftSize) {
+          spiritData.set('draftSize', draftSize);
         }
-        if (getSafeNumber(spiritState.get('draftPicks'), Number.NaN) !== draftPicks) {
-          spiritState.set('draftPicks', draftPicks);
+        if (getSafeNumber(spiritData.get('draftPicks'), Number.NaN) !== draftPicks) {
+          spiritData.set('draftPicks', draftPicks);
         }
-        if (spiritState.get('pendingDraftType') !== pendingDraftType) {
-          spiritState.set('pendingDraftType', pendingDraftType);
+        if (spiritData.get('pendingDraftType') !== pendingDraftType) {
+          spiritData.set('pendingDraftType', pendingDraftType);
         }
-        if (!Array.isArray(spiritState.get('pendingDraftCardIds'))) {
-          spiritState.set('pendingDraftCardIds', pendingDraftCardIds);
+        if (!Array.isArray(spiritData.get('pendingDraftCardIds'))) {
+          spiritData.set('pendingDraftCardIds', pendingDraftCardIds);
         }
-        if (getSafeNumber(spiritState.get('pendingDraftPicksRemaining'), Number.NaN) !== pendingDraftPicksRemaining) {
-          spiritState.set('pendingDraftPicksRemaining', pendingDraftPicksRemaining);
+        if (getSafeNumber(spiritData.get('pendingDraftPicksRemaining'), Number.NaN) !== pendingDraftPicksRemaining) {
+          spiritData.set('pendingDraftPicksRemaining', pendingDraftPicksRemaining);
         }
 
-        const ready = spiritState.get('ready') === true;
+        const ready = spiritData.get('ready') === true;
 
         nextStates.push({
-          boardId,
-          playerId: getSafeNumber(boardData.get('playerId'), 0),
+          spiritSlotId,
           spiritId: spiritId as string,
           energy,
           turn,
@@ -425,7 +435,8 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
       });
 
       setSpiritStates(nextStates);
-      setEmptyBoardIds(nextEmptyBoardIds);
+      setEmptySlotIds(nextEmptySlotIds);
+
     };
 
     syncFromDoc();
@@ -433,20 +444,19 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
     return () => doc.off('update', syncFromDoc);
   }, [docRef]);
 
-  // Keep selection valid: if the selected board disappears, fall back to the first board
+  // Keep selection valid: if the selected slot disappears, fall back to the first slot
   useEffect(() => {
-    if (!selectedBoardId || !spiritStates.some((s) => s.boardId === selectedBoardId)) {
-      selectBoard(spiritStates[0]?.boardId ?? null);
+    if (!selectedSlotId || !spiritStates.some((s) => s.spiritSlotId === selectedSlotId)) {
+      selectSpirit(spiritStates[0]?.spiritSlotId ?? null);
     }
-  }, [spiritStates, selectedBoardId]);
+  }, [spiritStates, selectedSlotId]);
 
   // Fetch presence layouts from backend when selected spirit changes
   const selectedSpiritIdForLayout = useMemo(() => {
-    const boardId = selectedBoardId;
-    if (!boardId) return null;
-    const state = spiritStates.find((s) => s.boardId === boardId);
+    if (!selectedSlotId) return null;
+    const state = spiritStates.find((s) => s.spiritSlotId === selectedSlotId);
     return state?.spiritId ?? null;
-  }, [selectedBoardId, spiritStates]);
+  }, [selectedSlotId, spiritStates]);
 
   const authToken = typeof localStorage !== 'undefined' ? localStorage.getItem('authToken') : null;
   const authHeaders = useMemo(() => ({
@@ -502,9 +512,9 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
   const panelContainerRef = useRef<HTMLDivElement | null>(null);
 
   const selectedState = useMemo(() => {
-    if (!selectedBoardId) return null;
-    return spiritStates.find((state) => state.boardId === selectedBoardId) ?? null;
-  }, [selectedBoardId, spiritStates]);
+    if (!selectedSlotId) return null;
+    return spiritStates.find((state) => state.spiritSlotId === selectedSlotId) ?? null;
+  }, [selectedSlotId, spiritStates]);
 
   const selectedSpirit = useMemo(() => {
     if (!selectedState) return null;
@@ -516,92 +526,83 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
     return SPIRITS.find((spirit) => spirit.id === selectedState.spiritId)?.name ?? 'this spirit';
   }, [selectedState]);
 
-  const setSpiritField = (boardId: string, field: string, value: unknown) => {
+  const setSpiritField = (spiritSlotId: string, field: string, value: unknown) => {
     withGameMap((gameMap) => {
-      const boards = gameMap.get('boards') as Y.Map<unknown> | undefined;
-      const boardData = boards instanceof Y.Map ? (boards.get(boardId) as Y.Map<unknown> | undefined) : undefined;
-      if (!(boardData instanceof Y.Map)) return;
-
-      const spiritState = boardData.get('spiritState') as Y.Map<unknown> | undefined;
-      if (!(spiritState instanceof Y.Map)) return;
-      spiritState.set(field, value);
+      const spirits = gameMap.get('spirits') as Y.Map<unknown> | undefined;
+      const spiritData = spirits instanceof Y.Map ? (spirits.get(spiritSlotId) as Y.Map<unknown> | undefined) : undefined;
+      if (!(spiritData instanceof Y.Map)) return;
+      spiritData.set(field, value);
     });
   };
 
-  const adjustEnergy = (boardId: string, delta: number) => {
+  const adjustEnergy = (spiritSlotId: string, delta: number) => {
     withGameMap((gameMap) => {
-      const boards = gameMap.get('boards') as Y.Map<unknown> | undefined;
-      const boardData = boards instanceof Y.Map ? (boards.get(boardId) as Y.Map<unknown> | undefined) : undefined;
-      if (!(boardData instanceof Y.Map)) return;
-      const spiritState = boardData.get('spiritState') as Y.Map<unknown> | undefined;
-      if (!(spiritState instanceof Y.Map)) return;
+      const spirits = gameMap.get('spirits') as Y.Map<unknown> | undefined;
+      const spiritData = spirits instanceof Y.Map ? (spirits.get(spiritSlotId) as Y.Map<unknown> | undefined) : undefined;
+      if (!(spiritData instanceof Y.Map)) return;
 
-      const next = getSafeNumber(spiritState.get('energy'), 0) + delta;
-      spiritState.set('energy', next);
+      const next = getSafeNumber(spiritData.get('energy'), 0) + delta;
+      spiritData.set('energy', next);
     });
   };
 
-  const payCardsInPlay = (boardId: string) => {
+  const payCardsInPlay = (spiritSlotId: string) => {
     withGameMap((gameMap) => {
-      const boards = gameMap.get('boards') as Y.Map<unknown> | undefined;
-      const boardData = boards instanceof Y.Map ? (boards.get(boardId) as Y.Map<unknown> | undefined) : undefined;
-      if (!(boardData instanceof Y.Map)) return;
-      const spiritState = boardData.get('spiritState') as Y.Map<unknown> | undefined;
-      if (!(spiritState instanceof Y.Map)) return;
+      const spirits = gameMap.get('spirits') as Y.Map<unknown> | undefined;
+      const spiritData = spirits instanceof Y.Map ? (spirits.get(spiritSlotId) as Y.Map<unknown> | undefined) : undefined;
+      if (!(spiritData instanceof Y.Map)) return;
 
       const turn = clampMin(getSafeNumber(gameMap.get('turn'), 1), 1);
       const round = clampMin(getSafeNumber(gameMap.get('round'), turn), 1);
-      const paidMarkedTurn = clampMin(getSafeNumber(spiritState.get('paidMarkedTurn'), 0), 0);
-      const paidMarkedRound = clampMin(getSafeNumber(spiritState.get('paidMarkedRound'), 0), 0);
-      const paidAmount = getSafeNumber(spiritState.get('paidAmount'), 0);
+      const paidMarkedTurn = clampMin(getSafeNumber(spiritData.get('paidMarkedTurn'), 0), 0);
+      const paidMarkedRound = clampMin(getSafeNumber(spiritData.get('paidMarkedRound'), 0), 0);
+      const paidAmount = getSafeNumber(spiritData.get('paidAmount'), 0);
 
       if (paidMarkedTurn === turn && paidMarkedRound === round) {
-        spiritState.set('energy', getSafeNumber(spiritState.get('energy'), 0) + paidAmount);
-        spiritState.set('paidMarkedTurn', 0);
-        spiritState.set('paidMarkedRound', 0);
-        spiritState.set('paidAmount', 0);
+        spiritData.set('energy', getSafeNumber(spiritData.get('energy'), 0) + paidAmount);
+        spiritData.set('paidMarkedTurn', 0);
+        spiritData.set('paidMarkedRound', 0);
+        spiritData.set('paidAmount', 0);
         return;
       }
 
-      const cardsInPlayRaw = spiritState.get('cardsInPlay');
+      const cardsInPlayRaw = spiritData.get('cardsInPlay');
       const cardsInPlay = Array.isArray(cardsInPlayRaw)
         ? cardsInPlayRaw.filter((item): item is string => typeof item === 'string')
         : [];
       const totalCost = cardsInPlay.reduce((sum, cardId) => sum + (POWER_CARD_COSTS.get(cardId) ?? 0), 0);
-      const energy = getSafeNumber(spiritState.get('energy'), 0);
+      const energy = getSafeNumber(spiritData.get('energy'), 0);
 
-      spiritState.set('energy', energy - totalCost);
-      spiritState.set('paidMarkedTurn', turn);
-      spiritState.set('paidMarkedRound', round);
-      spiritState.set('paidAmount', totalCost);
+      spiritData.set('energy', energy - totalCost);
+      spiritData.set('paidMarkedTurn', turn);
+      spiritData.set('paidMarkedRound', round);
+      spiritData.set('paidAmount', totalCost);
     });
   };
 
-  const recalcPresence = (boardId: string, patch: Partial<Pick<SpiritState, 'presenceInSupply' | 'presenceOnIsland' | 'presenceDestroyed' | 'presenceRemoved'>>) => {
+  const recalcPresence = (spiritSlotId: string, patch: Partial<Pick<SpiritState, 'presenceInSupply' | 'presenceOnIsland' | 'presenceDestroyed' | 'presenceRemoved'>>) => {
     withGameMap((gameMap) => {
-      const boards = gameMap.get('boards') as Y.Map<unknown> | undefined;
-      const boardData = boards instanceof Y.Map ? (boards.get(boardId) as Y.Map<unknown> | undefined) : undefined;
-      if (!(boardData instanceof Y.Map)) return;
-      const spiritState = boardData.get('spiritState') as Y.Map<unknown> | undefined;
-      if (!(spiritState instanceof Y.Map)) return;
+      const spirits = gameMap.get('spirits') as Y.Map<unknown> | undefined;
+      const spiritData = spirits instanceof Y.Map ? (spirits.get(spiritSlotId) as Y.Map<unknown> | undefined) : undefined;
+      if (!(spiritData instanceof Y.Map)) return;
 
-      const legacyInSupply = clampMin(getSafeNumber(spiritState.get('presenceInSupply'), TOTAL_PRESENCE_SLOTS), 0);
-      const currentSupplySlots = parsePresenceSupplySlotIndices(spiritState.get('presenceSupplySlotIndices'), legacyInSupply);
+      const legacyInSupply = clampMin(getSafeNumber(spiritData.get('presenceInSupply'), TOTAL_PRESENCE_SLOTS), 0);
+      const currentSupplySlots = parsePresenceSupplySlotIndices(spiritData.get('presenceSupplySlotIndices'), legacyInSupply);
       const requestedInSupply = clampMin(
         patch.presenceInSupply ?? currentSupplySlots.length,
         0
       );
       const inSupply = Math.min(TOTAL_PRESENCE_SLOTS, requestedInSupply);
       const onIsland = clampMin(
-        patch.presenceOnIsland ?? getSafeNumber(spiritState.get('presenceOnIsland'), 0),
+        patch.presenceOnIsland ?? getSafeNumber(spiritData.get('presenceOnIsland'), 0),
         0
       );
       const destroyed = clampMin(
-        patch.presenceDestroyed ?? getSafeNumber(spiritState.get('presenceDestroyed'), 0),
+        patch.presenceDestroyed ?? getSafeNumber(spiritData.get('presenceDestroyed'), 0),
         0
       );
       const removed = clampMin(
-        patch.presenceRemoved ?? getSafeNumber(spiritState.get('presenceRemoved'), 0),
+        patch.presenceRemoved ?? getSafeNumber(spiritData.get('presenceRemoved'), 0),
         0
       );
 
@@ -618,72 +619,76 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
         }
       }
 
-      spiritState.set('presenceSupplySlotIndices', nextSupplySlots);
-      spiritState.set('presenceInSupply', nextSupplySlots.length);
-      spiritState.set('presenceOnIsland', onIsland);
-      spiritState.set('presenceDestroyed', destroyed);
-      spiritState.set('presenceRemoved', removed);
+      spiritData.set('presenceSupplySlotIndices', nextSupplySlots);
+      spiritData.set('presenceInSupply', nextSupplySlots.length);
+      spiritData.set('presenceOnIsland', onIsland);
+      spiritData.set('presenceDestroyed', destroyed);
+      spiritData.set('presenceRemoved', removed);
     });
   };
 
-  const setCardZone = (boardId: string, zone: 'cardsInPlay' | 'cardsInHand' | 'cardsInDiscard', cards: string[]) => {
+  const setCardZone = (spiritSlotId: string, zone: 'cardsInPlay' | 'cardsInHand' | 'cardsInDiscard', cards: string[]) => {
     withGameMap((gameMap) => {
-      const boards = gameMap.get('boards') as Y.Map<unknown> | undefined;
-      const boardData = boards instanceof Y.Map ? (boards.get(boardId) as Y.Map<unknown> | undefined) : undefined;
-      if (!(boardData instanceof Y.Map)) return;
-      const spiritState = boardData.get('spiritState') as Y.Map<unknown> | undefined;
-      if (!(spiritState instanceof Y.Map)) return;
-      spiritState.set(zone, cards);
+      const spirits = gameMap.get('spirits') as Y.Map<unknown> | undefined;
+      const spiritData = spirits instanceof Y.Map ? (spirits.get(spiritSlotId) as Y.Map<unknown> | undefined) : undefined;
+      if (!(spiritData instanceof Y.Map)) return;
+      spiritData.set(zone, cards);
     });
   };
 
-  const drawDraftCards = (excludedIds: string[], kind: 'minor' | 'major', count: number) => {
-    const pool = kind === 'minor' ? MINOR_POWER_CARDS : MAJOR_POWER_CARDS;
-    const excludedSet = new Set(excludedIds);
-    const available = pool.filter((card) => !excludedSet.has(card.id));
-    const shuffled = [...available];
+  const drawFromSharedPile = (gameMap: Y.Map<unknown>, kind: 'minor' | 'major', count: number): string[] => {
+    const drawKey = kind === 'minor' ? 'minorPowerDrawPile' : 'majorPowerDrawPile';
+    const discardKey = kind === 'minor' ? 'minorPowerDiscardPile' : 'majorPowerDiscardPile';
 
-    for (let i = shuffled.length - 1; i > 0; i -= 1) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    let drawPile = parseStringArray(gameMap.get(drawKey));
+    let discardPile = parseStringArray(gameMap.get(discardKey));
+
+    if (!Array.isArray(gameMap.get(drawKey))) {
+      const allIds = (kind === 'minor' ? MINOR_POWER_CARDS : MAJOR_POWER_CARDS).map((c) => c.id);
+      const owned = new Set<string>();
+      const spirits = gameMap.get('spirits');
+      if (spirits instanceof Y.Map) {
+        spirits.forEach((sd: unknown) => {
+          if (!(sd instanceof Y.Map)) return;
+          for (const zone of ['cardsInPlay', 'cardsInHand', 'cardsInDiscard'] as const) {
+            parseStringArray(sd.get(zone)).forEach((id) => owned.add(id));
+          }
+        });
+      }
+      drawPile = shuffleArray(allIds.filter((id) => !owned.has(id)));
+      discardPile = [];
     }
 
-    return shuffled.slice(0, Math.max(0, count)).map((card) => card.id);
+    if (drawPile.length < count && discardPile.length > 0) {
+      drawPile = shuffleArray([...drawPile, ...discardPile]);
+      discardPile = [];
+    }
+
+    const drawn = drawPile.slice(0, Math.max(0, count));
+    gameMap.set(drawKey, drawPile.slice(drawn.length));
+    gameMap.set(discardKey, discardPile);
+    return drawn;
   };
 
-  const startPowerDraft = (boardId: string, kind: 'minor' | 'major') => {
+  const startPowerDraft = (spiritSlotId: string, kind: 'minor' | 'major') => {
     withGameMap((gameMap) => {
-      const boards = gameMap.get('boards') as Y.Map<unknown> | undefined;
-      const boardData = boards instanceof Y.Map ? (boards.get(boardId) as Y.Map<unknown> | undefined) : undefined;
-      if (!(boardData instanceof Y.Map)) return;
-      const spiritState = boardData.get('spiritState') as Y.Map<unknown> | undefined;
-      if (!(spiritState instanceof Y.Map)) return;
+      const spirits = gameMap.get('spirits') as Y.Map<unknown> | undefined;
+      const spiritData = spirits instanceof Y.Map ? (spirits.get(spiritSlotId) as Y.Map<unknown> | undefined) : undefined;
+      if (!(spiritData instanceof Y.Map)) return;
 
       const draftSize = Math.min(
         MAX_DRAFT_SIZE,
-        Math.max(MIN_DRAFT_SIZE, Math.floor(getSafeNumber(spiritState.get('draftSize'), 4)))
+        Math.max(MIN_DRAFT_SIZE, Math.floor(getSafeNumber(spiritData.get('draftSize'), 4)))
       );
       const draftPicks = Math.min(
         MAX_DRAFT_PICKS,
-        Math.max(MIN_DRAFT_PICKS, Math.floor(getSafeNumber(spiritState.get('draftPicks'), 1)))
+        Math.max(MIN_DRAFT_PICKS, Math.floor(getSafeNumber(spiritData.get('draftPicks'), 1)))
       );
 
-      const excluded = new Set<string>();
-      for (const zone of ['cardsInPlay', 'cardsInHand', 'cardsInDiscard'] as const) {
-        const raw = spiritState.get(zone);
-        if (Array.isArray(raw)) {
-          raw.forEach((entry) => {
-            if (typeof entry === 'string') {
-              excluded.add(entry);
-            }
-          });
-        }
-      }
-
-      const offered = drawDraftCards([...excluded], kind, draftSize);
-      spiritState.set('pendingDraftType', kind);
-      spiritState.set('pendingDraftCardIds', offered);
-      spiritState.set('pendingDraftPicksRemaining', Math.min(draftPicks, offered.length));
+      const offered = drawFromSharedPile(gameMap, kind, draftSize);
+      spiritData.set('pendingDraftType', kind);
+      spiritData.set('pendingDraftCardIds', offered);
+      spiritData.set('pendingDraftPicksRemaining', Math.min(draftPicks, offered.length));
     });
   };
 
@@ -701,48 +706,44 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
     }
   };
 
-  const cancelPowerDraft = (boardId: string) => {
+  const cancelPowerDraft = (spiritSlotId: string) => {
     withGameMap((gameMap) => {
-      const boards = gameMap.get('boards') as Y.Map<unknown> | undefined;
-      const boardData = boards instanceof Y.Map ? (boards.get(boardId) as Y.Map<unknown> | undefined) : undefined;
-      if (!(boardData instanceof Y.Map)) return;
-      const spiritState = boardData.get('spiritState') as Y.Map<unknown> | undefined;
-      if (!(spiritState instanceof Y.Map)) return;
+      const spirits = gameMap.get('spirits') as Y.Map<unknown> | undefined;
+      const spiritData = spirits instanceof Y.Map ? (spirits.get(spiritSlotId) as Y.Map<unknown> | undefined) : undefined;
+      if (!(spiritData instanceof Y.Map)) return;
 
-      const pendingDraftTypeRaw = spiritState.get('pendingDraftType');
+      const pendingDraftTypeRaw = spiritData.get('pendingDraftType');
       const pendingDraftType =
         pendingDraftTypeRaw === 'minor' || pendingDraftTypeRaw === 'major' ? pendingDraftTypeRaw : null;
-      const offeredRaw = spiritState.get('pendingDraftCardIds');
+      const offeredRaw = spiritData.get('pendingDraftCardIds');
       const offered = Array.isArray(offeredRaw)
         ? offeredRaw.filter((entry): entry is string => typeof entry === 'string')
         : [];
 
       if (pendingDraftType && offered.length > 0) {
-        discardUnpickedDraftCards(gameMap, offered, pendingDraftType, boardId);
+        discardUnpickedDraftCards(gameMap, offered, pendingDraftType, spiritSlotId);
       }
 
-      spiritState.set('pendingDraftType', null);
-      spiritState.set('pendingDraftCardIds', []);
-      spiritState.set('pendingDraftPicksRemaining', 0);
+      spiritData.set('pendingDraftType', null);
+      spiritData.set('pendingDraftCardIds', []);
+      spiritData.set('pendingDraftPicksRemaining', 0);
     });
   };
 
-  const pickPowerDraftCard = (boardId: string, cardId: string) => {
+  const pickPowerDraftCard = (spiritSlotId: string, cardId: string) => {
     withGameMap((gameMap) => {
-      const boards = gameMap.get('boards') as Y.Map<unknown> | undefined;
-      const boardData = boards instanceof Y.Map ? (boards.get(boardId) as Y.Map<unknown> | undefined) : undefined;
-      if (!(boardData instanceof Y.Map)) return;
-      const spiritState = boardData.get('spiritState') as Y.Map<unknown> | undefined;
-      if (!(spiritState instanceof Y.Map)) return;
+      const spirits = gameMap.get('spirits') as Y.Map<unknown> | undefined;
+      const spiritData = spirits instanceof Y.Map ? (spirits.get(spiritSlotId) as Y.Map<unknown> | undefined) : undefined;
+      if (!(spiritData instanceof Y.Map)) return;
 
-      const pendingDraftTypeRaw = spiritState.get('pendingDraftType');
+      const pendingDraftTypeRaw = spiritData.get('pendingDraftType');
       const pendingDraftType =
         pendingDraftTypeRaw === 'minor' || pendingDraftTypeRaw === 'major' ? pendingDraftTypeRaw : null;
       if (!pendingDraftType) {
         return;
       }
 
-      const offeredRaw = spiritState.get('pendingDraftCardIds');
+      const offeredRaw = spiritData.get('pendingDraftCardIds');
       const offered = Array.isArray(offeredRaw)
         ? offeredRaw.filter((entry): entry is string => typeof entry === 'string')
         : [];
@@ -750,43 +751,40 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
         return;
       }
 
-      const handRaw = spiritState.get('cardsInHand');
+      const handRaw = spiritData.get('cardsInHand');
       const hand = Array.isArray(handRaw)
         ? handRaw.filter((entry): entry is string => typeof entry === 'string')
         : [];
-      spiritState.set('cardsInHand', [...hand, cardId]);
+      spiritData.set('cardsInHand', [...hand, cardId]);
 
       const remainingOffered = offered.filter((entry) => entry !== cardId);
       const picksRemaining = Math.max(
         0,
-        Math.floor(getSafeNumber(spiritState.get('pendingDraftPicksRemaining'), 0)) - 1
+        Math.floor(getSafeNumber(spiritData.get('pendingDraftPicksRemaining'), 0)) - 1
       );
 
       if (picksRemaining <= 0 || remainingOffered.length === 0) {
         if (remainingOffered.length > 0) {
-          discardUnpickedDraftCards(gameMap, remainingOffered, pendingDraftType, boardId);
+          discardUnpickedDraftCards(gameMap, remainingOffered, pendingDraftType, spiritSlotId);
         }
-        spiritState.set('pendingDraftType', null);
-        spiritState.set('pendingDraftCardIds', []);
-        spiritState.set('pendingDraftPicksRemaining', 0);
+        spiritData.set('pendingDraftType', null);
+        spiritData.set('pendingDraftCardIds', []);
+        spiritData.set('pendingDraftPicksRemaining', 0);
         return;
       }
 
-      spiritState.set('pendingDraftCardIds', remainingOffered);
-      spiritState.set('pendingDraftPicksRemaining', Math.min(picksRemaining, remainingOffered.length));
+      spiritData.set('pendingDraftCardIds', remainingOffered);
+      spiritData.set('pendingDraftPicksRemaining', Math.min(picksRemaining, remainingOffered.length));
     });
   };
 
-  const forgetCard = (boardId: string, fromZone: CardZone, index: number) => {
+  const forgetCard = (spiritSlotId: string, fromZone: CardZone, index: number) => {
     withGameMap((gameMap) => {
-      const boards = gameMap.get('boards') as Y.Map<unknown> | undefined;
-      const boardData = boards instanceof Y.Map ? (boards.get(boardId) as Y.Map<unknown> | undefined) : undefined;
-      if (!(boardData instanceof Y.Map)) return;
+      const spirits = gameMap.get('spirits') as Y.Map<unknown> | undefined;
+      const spiritData = spirits instanceof Y.Map ? (spirits.get(spiritSlotId) as Y.Map<unknown> | undefined) : undefined;
+      if (!(spiritData instanceof Y.Map)) return;
 
-      const spiritState = boardData.get('spiritState') as Y.Map<unknown> | undefined;
-      if (!(spiritState instanceof Y.Map)) return;
-
-      const sourceZoneRaw = spiritState.get(fromZone);
+      const sourceZoneRaw = spiritData.get(fromZone);
       const sourceZone = Array.isArray(sourceZoneRaw)
         ? sourceZoneRaw.filter((item): item is string => typeof item === 'string')
         : [];
@@ -798,7 +796,7 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
 
       const nextSourceZone = [...sourceZone];
       nextSourceZone.splice(index, 1);
-      spiritState.set(fromZone, nextSourceZone);
+      spiritData.set(fromZone, nextSourceZone);
 
       const forgottenCard = FORGETTABLE_POWER_CARD_BY_ID.get(cardId);
       if (!forgottenCard) {
@@ -817,7 +815,7 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
         return;
       }
 
-      gameMap.set(forgottenPileKey, [...currentForgottenPile, { ...forgottenCard, sourceBoardId: boardId }]);
+      gameMap.set(forgottenPileKey, [...currentForgottenPile, { ...forgottenCard, sourceBoardId: spiritSlotId }]);
     });
   };
 
@@ -828,148 +826,144 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
 
   const openAddSpiritScreen = () => {
     setSpiritToAddId(getNextAvailableSpiritId());
-    setTargetBoardId(emptyBoardIds[0] ?? null);
     setIsAddingSpirit(true);
   };
 
-  const assignSpiritToBoard = (spiritIdToAdd: string, boardIdToUse: string) => {
+  const assignSpiritToSlot = (spiritIdToAdd: string, targetSlotId: string, boardType: string | null) => {
     withGameMap((gameMap) => {
-      const boards = gameMap.get('boards') as Y.Map<unknown> | undefined;
-      if (!(boards instanceof Y.Map) || !boards.has(boardIdToUse)) {
-        return;
-      }
-
-      const boardData = boards.get(boardIdToUse) as Y.Map<unknown>;
-      if (!(boardData instanceof Y.Map)) {
-        return;
-      }
+      const spirits = gameMap.get('spirits') as Y.Map<unknown> | undefined;
+      if (!(spirits instanceof Y.Map)) return;
 
       const spirit = SPIRITS.find((s) => s.id === spiritIdToAdd) ?? SPIRITS[0];
 
-      // Count existing boards to pick a color index
-      let boardIndex = 0;
-      boards.forEach((_b, bid) => {
-        if (bid < boardIdToUse) boardIndex += 1;
+      let slotIndex = 0;
+      spirits.forEach((_s, sid) => {
+        if (sid <= targetSlotId) slotIndex += 1;
       });
 
-      let spiritState = boardData.get('spiritState') as Y.Map<unknown> | undefined;
-      if (!(spiritState instanceof Y.Map)) {
-        spiritState = new Y.Map<unknown>();
-        boardData.set('spiritState', spiritState);
+      let spiritData = spirits.get(targetSlotId) as Y.Map<unknown> | undefined;
+      if (!(spiritData instanceof Y.Map)) {
+        spiritData = new Y.Map<unknown>();
+        spirits.set(targetSlotId, spiritData);
       }
 
-      spiritState.set('spiritId', spirit?.id ?? spiritIdToAdd);
-      spiritState.set('energy', 0);
-      spiritState.set('gainMarkedTurn', 0);
-      spiritState.set('gainMarkedRound', 0);
-      spiritState.set('paidMarkedTurn', 0);
-      spiritState.set('paidMarkedRound', 0);
-      spiritState.set('paidAmount', 0);
-      spiritState.set('presenceSupplySlotIndices', Array.from({ length: TOTAL_PRESENCE_SLOTS }, (_, i) => i));
-      spiritState.set('presenceInSupply', TOTAL_PRESENCE_SLOTS);
-      spiritState.set('presenceOnIsland', 0);
-      spiritState.set('presenceDestroyed', 0);
-      spiritState.set('presenceRemoved', 0);
-      spiritState.set('presenceColor', DEFAULT_COLORS[boardIndex % DEFAULT_COLORS.length] ?? '#facc15');
-      spiritState.set('cardsInPlay', []);
-      spiritState.set('cardsInDiscard', []);
-      spiritState.set('cardsInHand', (spirit?.uniquePowers ?? []).map((p) => p.id));
-      spiritState.set('draftSize', 4);
-      spiritState.set('draftPicks', 1);
-      spiritState.set('pendingDraftType', null);
-      spiritState.set('pendingDraftCardIds', []);
-      spiritState.set('pendingDraftPicksRemaining', 0);
-    });
+      spiritData.set('spiritId', spirit?.id ?? spiritIdToAdd);
+      spiritData.set('energy', 0);
+      spiritData.set('gainMarkedTurn', 0);
+      spiritData.set('gainMarkedRound', 0);
+      spiritData.set('paidMarkedTurn', 0);
+      spiritData.set('paidMarkedRound', 0);
+      spiritData.set('paidAmount', 0);
+      spiritData.set('presenceSupplySlotIndices', Array.from({ length: TOTAL_PRESENCE_SLOTS }, (_, i) => i));
+      spiritData.set('presenceInSupply', TOTAL_PRESENCE_SLOTS);
+      spiritData.set('presenceOnIsland', 0);
+      spiritData.set('presenceDestroyed', 0);
+      spiritData.set('presenceRemoved', 0);
+      spiritData.set('presenceColor', DEFAULT_COLORS[(slotIndex - 1) % DEFAULT_COLORS.length] ?? '#facc15');
+      spiritData.set('cardsInPlay', []);
+      spiritData.set('cardsInDiscard', []);
+      spiritData.set('cardsInHand', (spirit?.uniquePowers ?? []).map((p) => p.id));
+      spiritData.set('draftSize', 4);
+      spiritData.set('draftPicks', 1);
+      spiritData.set('pendingDraftType', null);
+      spiritData.set('pendingDraftCardIds', []);
+      spiritData.set('pendingDraftPicksRemaining', 0);
 
-    selectBoard(boardIdToUse);
-  };
-
-  const confirmAddSpirit = () => {
-    if (!spiritToAddId || !targetBoardId) {
-      return;
-    }
-    assignSpiritToBoard(spiritToAddId, targetBoardId);
-    setIsAddingSpirit(false);
-  };
-
-  const removeSpiritBoard = (boardId: string) => {
-    const confirmed = window.confirm(`Remove ${selectedSpiritName}? This cannot be undone.`);
-    if (!confirmed) {
-      return;
-    }
-
-    const nextSelectedBoardIdHolder: { value: string | null } = { value: null };
-
-    withGameMap((gameMap) => {
-      const boards = gameMap.get('boards') as Y.Map<unknown> | undefined;
-      if (!(boards instanceof Y.Map) || !boards.has(boardId)) {
-        return;
+      if (boardType !== null) {
+        const boards = gameMap.get('boards') as Y.Map<unknown> | undefined;
+        if (boards instanceof Y.Map) {
+          const boardMap = boards.get(targetSlotId) as Y.Map<unknown> | undefined;
+          if (boardMap instanceof Y.Map) {
+            boardMap.set('boardType', boardType);
+          }
+        }
       }
 
-      boards.delete(boardId);
-
-      const remainingBoardIds: string[] = [];
-      boards.forEach((_boardData, remainingBoardId) => {
-        remainingBoardIds.push(remainingBoardId);
+      let filledCount = 0;
+      spirits.forEach((sd) => {
+        if (!(sd instanceof Y.Map)) return;
+        const sId = sd.get('spiritId');
+        if (typeof sId === 'string' && sId.length > 0) filledCount += 1;
       });
-
-      const nextSpiritCount = Math.max(1, remainingBoardIds.length);
+      const nextSpiritCount = Math.max(1, filledCount);
       gameMap.set('spiritCount', nextSpiritCount);
       gameMap.set('playerCount', nextSpiritCount);
       gameMap.set('fearThreshold', nextSpiritCount * 4);
-
-      nextSelectedBoardIdHolder.value = remainingBoardIds[0] ?? null;
     });
 
-    selectBoard(nextSelectedBoardIdHolder.value);
+    selectSpirit(targetSlotId);
+  };
+
+  const confirmAddSpirit = () => {
+    if (!spiritToAddId) return;
+    const allSlotIds = [...spiritStates.map((s) => s.spiritSlotId), ...emptySlotIds];
+    const targetSlotId = emptySlotIds[0] ?? getNextSpiritSlotId(allSlotIds);
+    assignSpiritToSlot(spiritToAddId, targetSlotId, null);
+    setIsAddingSpirit(false);
+  };
+
+  const removeSpirit = (spiritSlotId: string) => {
+    const confirmed = window.confirm(`Remove ${selectedSpiritName}? This cannot be undone.`);
+    if (!confirmed) return;
+
+    const nextSelectedHolder: { value: string | null } = { value: null };
+
+    withGameMap((gameMap) => {
+      const spirits = gameMap.get('spirits') as Y.Map<unknown> | undefined;
+      if (!(spirits instanceof Y.Map)) return;
+
+      const spiritData = spirits.get(spiritSlotId);
+      if (spiritData instanceof Y.Map) {
+        spiritData.delete('spiritId');
+      }
+
+      let filledCount = 0;
+      spirits.forEach((sd, sid) => {
+        if (!(sd instanceof Y.Map)) return;
+        const sId = sd.get('spiritId');
+        if (typeof sId === 'string' && sId.length > 0) {
+          filledCount += 1;
+          if (sid !== spiritSlotId && nextSelectedHolder.value === null) {
+            nextSelectedHolder.value = sid;
+          }
+        }
+      });
+
+      const nextSpiritCount = Math.max(1, filledCount);
+      gameMap.set('spiritCount', nextSpiritCount);
+      gameMap.set('playerCount', nextSpiritCount);
+      gameMap.set('fearThreshold', nextSpiritCount * 4);
+    });
+
+    selectSpirit(nextSelectedHolder.value);
   };
 
   if (isAddingSpirit) {
     const usedSpiritIds = new Set(spiritStates.map((state) => state.spiritId));
-    const canConfirm = !!spiritToAddId && !!targetBoardId;
 
     return (
       <section className="rounded-xl bg-white p-6 shadow">
         <div className="mb-4 flex items-start justify-between gap-4">
           <div>
             <h2 className="text-xl font-semibold text-slate-900">Add Spirit</h2>
-            <p className="text-sm text-slate-500">Choose a spirit and the board it will occupy.</p>
+            <p className="text-sm text-slate-500">Choose a spirit to add to the game.</p>
           </div>
         </div>
 
         <div className="space-y-4">
-          <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 space-y-3">
-            <div>
-              <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600">Spirit</label>
-              <select
-                className="mt-2 w-full rounded border border-slate-300 bg-white px-3 py-2 text-sm"
-                value={spiritToAddId}
-                onChange={(event) => setSpiritToAddId(event.target.value)}
-              >
-                {SPIRITS.map((spirit) => (
-                  <option key={spirit.id} value={spirit.id}>
-                    {spirit.name}{usedSpiritIds.has(spirit.id) ? ' (already in game)' : ''}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600">Board</label>
-              {emptyBoardIds.length === 0 ? (
-                <p className="mt-2 text-sm text-slate-500">No empty boards available.</p>
-              ) : (
-                <select
-                  className="mt-2 w-full rounded border border-slate-300 bg-white px-3 py-2 text-sm"
-                  value={targetBoardId ?? ''}
-                  onChange={(event) => setTargetBoardId(event.target.value)}
-                >
-                  {emptyBoardIds.map((bid) => (
-                    <option key={bid} value={bid}>Board {bid}</option>
-                  ))}
-                </select>
-              )}
-            </div>
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+            <label className="block text-xs font-semibold uppercase tracking-wide text-slate-600">Spirit</label>
+            <select
+              className="mt-2 w-full rounded border border-slate-300 bg-white px-3 py-2 text-sm"
+              value={spiritToAddId}
+              onChange={(event) => setSpiritToAddId(event.target.value)}
+            >
+              {SPIRITS.map((spirit) => (
+                <option key={spirit.id} value={spirit.id}>
+                  {spirit.name}{usedSpiritIds.has(spirit.id) ? ' (already in game)' : ''}
+                </option>
+              ))}
+            </select>
           </div>
 
           <div className="flex gap-2">
@@ -983,14 +977,14 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
             <button
               type="button"
               onClick={confirmAddSpirit}
-              disabled={!canConfirm}
+              disabled={!spiritToAddId}
               className={`rounded border px-3 py-1.5 text-sm font-semibold ${
-                !canConfirm
+                !spiritToAddId
                   ? 'cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400'
                   : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-100'
               }`}
             >
-              Assign Spirit to Board
+              Add Spirit
             </button>
           </div>
         </div>
@@ -1013,7 +1007,7 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
             </button>
           ) : null}
         </div>
-        <p className="mt-2 text-sm text-slate-500">No spirits assigned yet. Use "Add Spirit" to assign a spirit to a board.</p>
+        <p className="mt-2 text-sm text-slate-500">No spirits added yet. Use "Add Spirit" to add a spirit to the game.</p>
       </section>
     );
   }
@@ -1033,14 +1027,9 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
           <button
             type="button"
             onClick={openAddSpiritScreen}
-            disabled={emptyBoardIds.length === 0}
-            className={`rounded border px-3 py-1.5 text-sm font-semibold ${
-              emptyBoardIds.length === 0
-                ? 'cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400'
-                : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-100'
-            }`}
+            className="rounded border border-slate-300 bg-white px-3 py-1.5 text-sm font-semibold text-slate-700 hover:bg-slate-100"
           >
-            Add Spirit ({spiritStates.length}/{spiritStates.length + emptyBoardIds.length})
+            Add Spirit
           </button>
         ) : null}
       </div>
@@ -1052,14 +1041,14 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
               const spirit = SPIRITS.find((item) => item.id === state.spiritId);
               return (
                 <button
-                  key={state.boardId}
+                  key={state.spiritSlotId}
                   type="button"
-                  onClick={() => selectBoard(state.boardId)}
+                  onClick={() => selectSpirit(state.spiritSlotId)}
                   className={`rounded px-3 py-1.5 text-sm font-medium ${
-                    selectedBoardId === state.boardId ? 'bg-slate-800 text-white' : 'text-slate-600 hover:bg-white'
+                    selectedSlotId === state.spiritSlotId ? 'bg-slate-800 text-white' : 'text-slate-600 hover:bg-white'
                   }`}
                 >
-                  {state.ready ? '✅' : '❌'} {spirit?.name ?? `Spirit ${state.boardId}`}
+                  {state.ready ? '✅' : '❌'} {spirit?.name ?? `Spirit ${state.spiritSlotId}`}
                 </button>
               );
             })}
@@ -1086,23 +1075,20 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
           {selectedState ? (
             <div>
               <p className="text-sm font-semibold text-slate-900">{selectedSpirit?.name ?? selectedState.spiritId}</p>
-              <p className="mt-1 text-xs text-slate-500">
-                Board {selectedState.boardId} (Player {selectedState.playerId})
-              </p>
               <p className="mt-2 text-xs text-slate-500">Spirit choice is locked after add. Remove and re-add to change.</p>
               <div className="mt-4 flex items-center gap-3">
                 <span className="text-xs font-semibold uppercase tracking-wide text-slate-600">Presence color</span>
                 <input
                   type="color"
                   value={selectedState.presenceColor}
-                  onChange={(event) => setSpiritField(selectedState.boardId, 'presenceColor', event.target.value)}
+                  onChange={(event) => setSpiritField(selectedState.spiritSlotId, 'presenceColor', event.target.value)}
                   className="h-8 w-12 cursor-pointer rounded border border-slate-300 bg-white"
                 />
               </div>
               <div className="mt-4">
                 <button
                   type="button"
-                  onClick={() => removeSpiritBoard(selectedState.boardId)}
+                  onClick={() => removeSpirit(selectedState.spiritSlotId)}
                   className="rounded border border-rose-300 bg-rose-50 px-3 py-1.5 text-sm font-semibold text-rose-700 hover:bg-rose-100"
                 >
                   Remove Spirit
@@ -1176,15 +1162,15 @@ type FullSpiritViewProps = {
   panelAspectRatios: Record<string, number>;
   setPanelAspectRatios: React.Dispatch<React.SetStateAction<Record<string, number>>>;
   panelContainerRef: React.RefObject<HTMLDivElement | null>;
-  adjustEnergy: (boardId: string, delta: number) => void;
-  payCardsInPlay: (boardId: string) => void;
-  setSpiritField: (boardId: string, field: string, value: unknown) => void;
-  recalcPresence: (boardId: string, patch: Partial<Pick<SpiritState, 'presenceInSupply' | 'presenceOnIsland' | 'presenceDestroyed' | 'presenceRemoved'>>) => void;
-  setCardZone: (boardId: string, zone: CardZone, cards: string[]) => void;
-  forgetCard: (boardId: string, fromZone: CardZone, index: number) => void;
-  startPowerDraft: (boardId: string, kind: 'minor' | 'major') => void;
-  cancelPowerDraft: (boardId: string) => void;
-  pickPowerDraftCard: (boardId: string, cardId: string) => void;
+  adjustEnergy: (spiritSlotId: string, delta: number) => void;
+  payCardsInPlay: (spiritSlotId: string) => void;
+  setSpiritField: (spiritSlotId: string, field: string, value: unknown) => void;
+  recalcPresence: (spiritSlotId: string, patch: Partial<Pick<SpiritState, 'presenceInSupply' | 'presenceOnIsland' | 'presenceDestroyed' | 'presenceRemoved'>>) => void;
+  setCardZone: (spiritSlotId: string, zone: CardZone, cards: string[]) => void;
+  forgetCard: (spiritSlotId: string, fromZone: CardZone, index: number) => void;
+  startPowerDraft: (spiritSlotId: string, kind: 'minor' | 'major') => void;
+  cancelPowerDraft: (spiritSlotId: string) => void;
+  pickPowerDraftCard: (spiritSlotId: string, cardId: string) => void;
   resizeModeEnabled: boolean;
 };
 
@@ -1256,8 +1242,8 @@ const FullSpiritView: React.FC<FullSpiritViewProps> = ({
     if (fromZone === toZone) return;
     const fromNext = [...selectedState[fromZone]];
     fromNext.splice(index, 1);
-    setCardZone(selectedState.boardId, fromZone, fromNext);
-    setCardZone(selectedState.boardId, toZone, [...selectedState[toZone], cardId]);
+    setCardZone(selectedState.spiritSlotId, fromZone, fromNext);
+    setCardZone(selectedState.spiritSlotId, toZone, [...selectedState[toZone], cardId]);
   };
 
   const getCardDefinition = (cardId: string) => {
@@ -1441,7 +1427,7 @@ const FullSpiritView: React.FC<FullSpiritViewProps> = ({
               </div>
               <button
                 type="button"
-                onClick={() => payCardsInPlay(selectedState.boardId)}
+                onClick={() => payCardsInPlay(selectedState.spiritSlotId)}
                 className={`rounded border px-2 py-1 text-sm font-semibold ${
                   paidThisTurn
                     ? 'border-emerald-600 bg-emerald-600 text-white'
@@ -1518,7 +1504,7 @@ const FullSpiritView: React.FC<FullSpiritViewProps> = ({
               </p>
               <button
                 type="button"
-                onClick={() => cancelPowerDraft(selectedState.boardId)}
+                onClick={() => cancelPowerDraft(selectedState.spiritSlotId)}
                 className="rounded border border-slate-300 bg-white px-2 py-0.5 text-[10px] font-semibold text-slate-700 hover:bg-slate-100"
               >
                 Cancel Draft
@@ -1542,7 +1528,7 @@ const FullSpiritView: React.FC<FullSpiritViewProps> = ({
                   )}
                   <button
                     type="button"
-                    onClick={() => pickPowerDraftCard(selectedState.boardId, card.id)}
+                    onClick={() => pickPowerDraftCard(selectedState.spiritSlotId, card.id)}
                     className="w-full rounded border border-emerald-300 bg-emerald-50 px-2 py-0.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-100"
                   >
                     Pick
@@ -1568,7 +1554,7 @@ const FullSpiritView: React.FC<FullSpiritViewProps> = ({
           <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={() => setSpiritField(selectedState.boardId, 'ready', !selectedState.ready)}
+              onClick={() => setSpiritField(selectedState.spiritSlotId, 'ready', !selectedState.ready)}
               className={`shrink-0 rounded border px-3 py-1.5 text-sm font-semibold ${
                 selectedState.ready
                   ? 'border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700'
@@ -1581,14 +1567,14 @@ const FullSpiritView: React.FC<FullSpiritViewProps> = ({
             <span className="text-sm font-semibold text-slate-700">Energy: {selectedState.energy}</span>
             <button
               type="button"
-              onClick={() => adjustEnergy(selectedState.boardId, -1)}
+              onClick={() => adjustEnergy(selectedState.spiritSlotId, -1)}
               className="rounded border border-slate-300 bg-white px-2 py-0.5 text-xs font-semibold text-slate-700 hover:bg-slate-100"
             >
               −1
             </button>
             <button
               type="button"
-              onClick={() => adjustEnergy(selectedState.boardId, 1)}
+              onClick={() => adjustEnergy(selectedState.spiritSlotId, 1)}
               className="rounded border border-emerald-300 bg-emerald-50 px-2 py-0.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-100"
             >
               +1
@@ -1597,9 +1583,9 @@ const FullSpiritView: React.FC<FullSpiritViewProps> = ({
               type="button"
               onClick={() => {
                 if (!gainedThisTurn) {
-                  adjustEnergy(selectedState.boardId, energyGainAmount);
-                  setSpiritField(selectedState.boardId, 'gainMarkedTurn', selectedState.turn);
-                  setSpiritField(selectedState.boardId, 'gainMarkedRound', selectedState.round);
+                  adjustEnergy(selectedState.spiritSlotId, energyGainAmount);
+                  setSpiritField(selectedState.spiritSlotId, 'gainMarkedTurn', selectedState.turn);
+                  setSpiritField(selectedState.spiritSlotId, 'gainMarkedRound', selectedState.round);
                 }
               }}
               className={`rounded border px-2 py-0.5 text-xs font-semibold ${
@@ -1613,14 +1599,14 @@ const FullSpiritView: React.FC<FullSpiritViewProps> = ({
             <div className="ml-auto flex items-center gap-1">
               <button
                 type="button"
-                onClick={() => startPowerDraft(selectedState.boardId, 'minor')}
+                onClick={() => startPowerDraft(selectedState.spiritSlotId, 'minor')}
                 className="rounded border border-blue-300 bg-blue-50 px-2 py-0.5 text-xs font-semibold text-blue-700 hover:bg-blue-100"
               >
                 Gain Minor Power
               </button>
               <button
                 type="button"
-                onClick={() => startPowerDraft(selectedState.boardId, 'major')}
+                onClick={() => startPowerDraft(selectedState.spiritSlotId, 'major')}
                 className="rounded border border-amber-300 bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-700 hover:bg-amber-100"
               >
                 Gain Major Power
@@ -1668,7 +1654,7 @@ const FullSpiritView: React.FC<FullSpiritViewProps> = ({
                   onDragStart={(e) => {
                     e.dataTransfer.effectAllowed = 'copy';
                     e.dataTransfer.setData('piece-type', 'presence-from-panel');
-                    e.dataTransfer.setData('spirit-board-id', selectedState.boardId);
+                    e.dataTransfer.setData('spirit-board-id', selectedState.spiritSlotId);
                     e.dataTransfer.setData('spirit-slot-index', String(slotIndex));
                     e.dataTransfer.setData('spirit-slot-reward', slot.reward ?? '');
                   }}
@@ -1744,7 +1730,7 @@ const FullSpiritView: React.FC<FullSpiritViewProps> = ({
               event.preventDefault();
               const draggedCard = getDraggedCardFromDataTransfer(event);
               if (!draggedCard) return;
-              forgetCard(selectedState.boardId, draggedCard.zone, draggedCard.index);
+              forgetCard(selectedState.spiritSlotId, draggedCard.zone, draggedCard.index);
             }}
           >
             Drag here to forget a card
@@ -1760,7 +1746,7 @@ const FullSpiritView: React.FC<FullSpiritViewProps> = ({
           <button
             type="button"
             disabled={selectedState.presenceDestroyed === 0}
-            onClick={() => recalcPresence(selectedState.boardId, {
+            onClick={() => recalcPresence(selectedState.spiritSlotId, {
               presenceDestroyed: selectedState.presenceDestroyed - 1,
               presenceRemoved: selectedState.presenceRemoved + 1,
             })}
@@ -1785,7 +1771,7 @@ const FullSpiritView: React.FC<FullSpiritViewProps> = ({
               onDragStart={(e) => {
                 e.dataTransfer.effectAllowed = 'copy';
                 e.dataTransfer.setData('piece-type', 'presence-destroyed-from-panel');
-                e.dataTransfer.setData('spirit-board-id', selectedState.boardId);
+                e.dataTransfer.setData('spirit-board-id', selectedState.spiritSlotId);
               }}
               className="cursor-grab"
               title="Drag onto a board land to re-add this presence to the island"
@@ -1811,7 +1797,7 @@ const FullSpiritView: React.FC<FullSpiritViewProps> = ({
             <div className="mt-1 flex items-center gap-1">
               <button
                 type="button"
-                onClick={() => setSpiritField(selectedState.boardId, 'draftSize', selectedState.draftSize - 1)}
+                onClick={() => setSpiritField(selectedState.spiritSlotId, 'draftSize', selectedState.draftSize - 1)}
                 className="rounded border border-sky-300 bg-white px-2 py-0.5 text-xs font-semibold text-sky-700 hover:bg-sky-100"
               >
                 -
@@ -1819,7 +1805,7 @@ const FullSpiritView: React.FC<FullSpiritViewProps> = ({
               <span className="min-w-7 text-center text-xs font-semibold text-sky-900">{selectedState.draftSize}</span>
               <button
                 type="button"
-                onClick={() => setSpiritField(selectedState.boardId, 'draftSize', selectedState.draftSize + 1)}
+                onClick={() => setSpiritField(selectedState.spiritSlotId, 'draftSize', selectedState.draftSize + 1)}
                 className="rounded border border-sky-300 bg-white px-2 py-0.5 text-xs font-semibold text-sky-700 hover:bg-sky-100"
               >
                 +
@@ -1832,7 +1818,7 @@ const FullSpiritView: React.FC<FullSpiritViewProps> = ({
             <div className="mt-1 flex items-center gap-1">
               <button
                 type="button"
-                onClick={() => setSpiritField(selectedState.boardId, 'draftPicks', selectedState.draftPicks - 1)}
+                onClick={() => setSpiritField(selectedState.spiritSlotId, 'draftPicks', selectedState.draftPicks - 1)}
                 className="rounded border border-sky-300 bg-white px-2 py-0.5 text-xs font-semibold text-sky-700 hover:bg-sky-100"
               >
                 -
@@ -1840,7 +1826,7 @@ const FullSpiritView: React.FC<FullSpiritViewProps> = ({
               <span className="min-w-7 text-center text-xs font-semibold text-sky-900">{selectedState.draftPicks}</span>
               <button
                 type="button"
-                onClick={() => setSpiritField(selectedState.boardId, 'draftPicks', selectedState.draftPicks + 1)}
+                onClick={() => setSpiritField(selectedState.spiritSlotId, 'draftPicks', selectedState.draftPicks + 1)}
                 className="rounded border border-sky-300 bg-white px-2 py-0.5 text-xs font-semibold text-sky-700 hover:bg-sky-100"
               >
                 +

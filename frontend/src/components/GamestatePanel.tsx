@@ -91,7 +91,7 @@ type GamestateSnapshot = {
 
 interface GamestatePanelProps {
   docRef: React.MutableRefObject<Y.Doc | null>;
-  selectedBoardId?: string | null;
+  selectedSpiritId?: string | null;
   isOwner: boolean;
   gameId: string;
   token: string;
@@ -775,7 +775,7 @@ const DiscardPileSection = ({
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:3001';
 
-const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef, selectedBoardId, isOwner, gameId, token }) => {
+const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef, selectedSpiritId, isOwner, gameId, token }) => {
   const [snapshot, setSnapshot] = useState<GamestateSnapshot>(initialSnapshot);
   const [showInvaderDiscard, setShowInvaderDiscard] = useState(false);
   const [showEventDiscard, setShowEventDiscard] = useState(false);
@@ -1186,7 +1186,7 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef, selectedBoardId
     cardId: string,
     pileKey: 'forgottenMinorPowerCards' | 'forgottenMajorPowerCards' | 'forgottenUniquePowerCards',
   ) => {
-    if (!selectedBoardId) return;
+    if (!selectedSpiritId) return;
 
     withGameMap((_doc, gameMap) => {
       const pile = parseForgottenPowerCardList(gameMap.get(pileKey));
@@ -1194,17 +1194,14 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef, selectedBoardId
 
       gameMap.set(pileKey, pile.filter((c) => c.id !== cardId));
 
-      const boards = gameMap.get('boards');
-      if (boards instanceof Y.Map) {
-        const boardData = boards.get(selectedBoardId);
-        if (boardData instanceof Y.Map) {
-          const spiritState = boardData.get('spiritState');
-          if (spiritState instanceof Y.Map) {
-            const hand = spiritState.get('cardsInHand');
-            const currentHand: string[] = Array.isArray(hand) ? hand.filter((id) => typeof id === 'string') : [];
-            if (!currentHand.includes(cardId)) {
-              spiritState.set('cardsInHand', [...currentHand, cardId]);
-            }
+      const spirits = gameMap.get('spirits');
+      if (spirits instanceof Y.Map) {
+        const spiritData = spirits.get(selectedSpiritId);
+        if (spiritData instanceof Y.Map) {
+          const hand = spiritData.get('cardsInHand');
+          const currentHand: string[] = Array.isArray(hand) ? hand.filter((id) => typeof id === 'string') : [];
+          if (!currentHand.includes(cardId)) {
+            spiritData.set('cardsInHand', [...currentHand, cardId]);
           }
         }
       }

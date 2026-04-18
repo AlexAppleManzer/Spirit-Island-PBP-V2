@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useImperativeHandle, useMemo, useRef, us
 import { Stage, Layer, Image, Line, Text, Group, Rect, Circle } from 'react-konva';
 import useImage from 'use-image';
 import * as Y from 'yjs';
+import { BOARDS } from '../data/boards';
 
 interface GamePiece {
   pieceId?: string;
@@ -194,8 +195,19 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
     width: DEFAULT_VIEWPORT_WIDTH,
     height: DEFAULT_VIEWPORT_HEIGHT,
   });
-  const [boardImage] = useImage('/board.png');
-  
+  const [boardImageA] = useImage(BOARDS.find(b => b.nickname === 'A')?.imageUrl ?? '');
+  const [boardImageB] = useImage(BOARDS.find(b => b.nickname === 'B')?.imageUrl ?? '');
+  const [boardImageC] = useImage(BOARDS.find(b => b.nickname === 'C')?.imageUrl ?? '');
+  const [boardImageD] = useImage(BOARDS.find(b => b.nickname === 'D')?.imageUrl ?? '');
+  const [boardImageE] = useImage(BOARDS.find(b => b.nickname === 'E')?.imageUrl ?? '');
+  const [boardImageF] = useImage(BOARDS.find(b => b.nickname === 'F')?.imageUrl ?? '');
+  const [boardImageG] = useImage(BOARDS.find(b => b.nickname === 'G')?.imageUrl ?? '');
+  const [boardImageH] = useImage(BOARDS.find(b => b.nickname === 'H')?.imageUrl ?? '');
+  const boardImageByNickname = useMemo<Record<string, HTMLImageElement | undefined>>(() => ({
+    A: boardImageA, B: boardImageB, C: boardImageC, D: boardImageD,
+    E: boardImageE, F: boardImageF, G: boardImageG, H: boardImageH,
+  }), [boardImageA, boardImageB, boardImageC, boardImageD, boardImageE, boardImageF, boardImageG, boardImageH]);
+
   const [explorerImage] = useImage('/InvaderExplorer.png');
   const [townImage] = useImage('/InvaderTown.png');
   const [cityImage] = useImage('/InvaderCity.png');
@@ -211,7 +223,8 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
   const [blightImage] = useImage('/Blight.png');
   
   const [boards, setBoards] = useState<Map<string, any>>(new Map());
-  const [landBounds, setLandBounds] = useState<Record<number, LandBounds> | null>(null);
+  const [allBoardHitboxes, setAllBoardHitboxes] = useState<Record<string, { lands: Record<number, LandBounds>; stageDimensions: { width: number; height: number } }> | null>(null);
+  const landBounds = allBoardHitboxes ? (allBoardHitboxes['A']?.lands ?? Object.values(allBoardHitboxes)[0]?.lands ?? null) : null;
   const [boardDimensions, setBoardDimensions] = useState({ width: DEFAULT_BOARD_WIDTH, height: DEFAULT_BOARD_HEIGHT });
   const [draggedPieceType, setDraggedPieceType] = useState<string | null>(null);
   const [draggingBoardId, setDraggingBoardId] = useState<string | null>(null);
@@ -233,6 +246,7 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
   const [showAdvancedTokens, setShowAdvancedTokens] = useState(false);
   const [spiritColors, setSpiritColors] = useState<Map<string, string>>(new Map());
   const [hoveredDropZone, setHoveredDropZone] = useState<'remove' | 'destroy' | null>(null);
+  const [showBoardPicker, setShowBoardPicker] = useState(false);
   const didAutoCenterRef = useRef(false);
 
   useEffect(() => {
@@ -405,17 +419,25 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
   useEffect(() => {
     const loadLandBounds = async () => {
       try {
-        const response = await fetch('/landBounds.json');
-        const data: LandBoundsAsset = await response.json();
-        setLandBounds(data.lands);
-        if (data.stageDimensions?.width && data.stageDimensions?.height) {
+        const response = await fetch('/boardHitboxes.json');
+        const data: Record<string, LandBoundsAsset> = await response.json();
+        setAllBoardHitboxes(
+          Object.fromEntries(
+            Object.entries(data).map(([nickname, asset]) => [
+              nickname,
+              { lands: asset.lands, stageDimensions: asset.stageDimensions },
+            ])
+          )
+        );
+        const firstAsset = Object.values(data)[0];
+        if (firstAsset?.stageDimensions?.width && firstAsset?.stageDimensions?.height) {
           setBoardDimensions({
-            width: data.stageDimensions.width,
-            height: data.stageDimensions.height,
+            width: firstAsset.stageDimensions.width,
+            height: firstAsset.stageDimensions.height,
           });
         }
       } catch (error) {
-        console.error('Failed to load land bounds:', error);
+        console.error('Failed to load board hitboxes:', error);
       }
     };
     loadLandBounds();
@@ -437,11 +459,15 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
       if (boardsMap) {
         boardsMap.forEach((boardData: any, boardId: string) => {
           updatedBoards.set(boardId, boardData);
-          const spiritState = boardData.get('spiritState');
-          if (spiritState instanceof Y.Map) {
-            const color = spiritState.get('presenceColor');
-            if (typeof color === 'string') nextColors.set(boardId, color);
-          }
+        });
+      }
+      // Spirit colors live in game.spirits, keyed by spirit slot ID.
+      const spiritsMap = gameMap.get('spirits') as Y.Map<any> | undefined;
+      if (spiritsMap) {
+        spiritsMap.forEach((spiritData: any, spiritSlotId: string) => {
+          if (!(spiritData instanceof Y.Map)) return;
+          const color = spiritData.get('presenceColor');
+          if (typeof color === 'string') nextColors.set(spiritSlotId, color);
         });
       }
       setBoards(updatedBoards);
@@ -545,8 +571,11 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
       ) {
         const localX = localPoint.x;
         const localY = localPoint.y;
+        const boardType = boardData.get('boardType') as string | undefined;
+        const dropLandBounds = (allBoardHitboxes && boardType ? allBoardHitboxes[boardType]?.lands : null) ?? landBounds;
+        if (!dropLandBounds) return;
 
-        for (const [landId, bounds] of Object.entries(landBounds)) {
+        for (const [landId, bounds] of Object.entries(dropLandBounds)) {
           if (isPointInPolygon({ x: localX, y: localY }, (bounds as any).polygon)) {
             const landsMap = boardData.get('lands') as Y.Map<any>;
             const piecesArray = landsMap.get(landId) as Y.Array<any>;
@@ -582,55 +611,49 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
 
     // When presence is dragged from the spirit panel, decrement presenceInSupply
     if (isPresenceFromPanel && foundLand && spiritBoardId) {
-      const boardsMap2 = gameMap.get('boards') as Y.Map<any> | undefined;
-      if (boardsMap2) {
-        const boardData = boardsMap2.get(spiritBoardId) as any;
-        if (boardData) {
-          const spiritState = boardData.get('spiritState');
-          if (spiritState instanceof Y.Map) {
-            const rawSupplySlots = spiritState.get('presenceSupplySlotIndices');
-            const currentSupplySlots = Array.isArray(rawSupplySlots)
-              ? [...new Set(rawSupplySlots.filter((entry): entry is number => typeof entry === 'number' && Number.isFinite(entry)).map((entry) => Math.floor(entry)).filter((entry) => entry >= 0 && entry < 13))]
-              : [];
-            const nextSupplySlots = hasPresenceSlotIndex
-              ? currentSupplySlots.filter((entry) => entry !== spiritSlotIndex)
-              : currentSupplySlots.slice(0, Math.max(0, currentSupplySlots.length - 1));
-            const current = typeof spiritState.get('presenceInSupply') === 'number'
-              ? (spiritState.get('presenceInSupply') as number)
-              : currentSupplySlots.length;
-            doc.transact(() => {
-              if (currentSupplySlots.length > 0) {
-                spiritState.set('presenceSupplySlotIndices', nextSupplySlots);
-                spiritState.set('presenceInSupply', nextSupplySlots.length);
-              } else {
-                spiritState.set('presenceInSupply', Math.max(0, current - 1));
-              }
-              spiritState.set('presenceOnIsland', Math.max(0, (typeof spiritState.get('presenceOnIsland') === 'number' ? spiritState.get('presenceOnIsland') as number : 0) + 1));
-            });
-          }
+      const spiritsMap2 = gameMap.get('spirits') as Y.Map<any> | undefined;
+      if (spiritsMap2) {
+        const spiritData = spiritsMap2.get(spiritBoardId) as any;
+        if (spiritData instanceof Y.Map) {
+          const rawSupplySlots = spiritData.get('presenceSupplySlotIndices');
+          const currentSupplySlots = Array.isArray(rawSupplySlots)
+            ? [...new Set(rawSupplySlots.filter((entry): entry is number => typeof entry === 'number' && Number.isFinite(entry)).map((entry) => Math.floor(entry)).filter((entry) => entry >= 0 && entry < 13))]
+            : [];
+          const nextSupplySlots = hasPresenceSlotIndex
+            ? currentSupplySlots.filter((entry) => entry !== spiritSlotIndex)
+            : currentSupplySlots.slice(0, Math.max(0, currentSupplySlots.length - 1));
+          const current = typeof spiritData.get('presenceInSupply') === 'number'
+            ? (spiritData.get('presenceInSupply') as number)
+            : currentSupplySlots.length;
+          doc.transact(() => {
+            if (currentSupplySlots.length > 0) {
+              spiritData.set('presenceSupplySlotIndices', nextSupplySlots);
+              spiritData.set('presenceInSupply', nextSupplySlots.length);
+            } else {
+              spiritData.set('presenceInSupply', Math.max(0, current - 1));
+            }
+            spiritData.set('presenceOnIsland', Math.max(0, (typeof spiritData.get('presenceOnIsland') === 'number' ? spiritData.get('presenceOnIsland') as number : 0) + 1));
+          });
         }
       }
     }
 
     // When a destroyed presence is dragged back onto the island, decrement presenceDestroyed
     if (isPresenceDestroyedFromPanel && foundLand && spiritBoardId) {
-      const boardsMapDP = gameMap.get('boards') as Y.Map<any> | undefined;
-      if (boardsMapDP) {
-        const boardDataDP = boardsMapDP.get(spiritBoardId) as any;
-        if (boardDataDP) {
-          const spiritStateDP = boardDataDP.get('spiritState');
-          if (spiritStateDP instanceof Y.Map) {
-            doc.transact(() => {
-              const currentDestroyed = typeof spiritStateDP.get('presenceDestroyed') === 'number'
-                ? spiritStateDP.get('presenceDestroyed') as number
-                : 0;
-              const currentOnIsland = typeof spiritStateDP.get('presenceOnIsland') === 'number'
-                ? spiritStateDP.get('presenceOnIsland') as number
-                : 0;
-              spiritStateDP.set('presenceDestroyed', Math.max(0, currentDestroyed - 1));
-              spiritStateDP.set('presenceOnIsland', currentOnIsland + 1);
-            });
-          }
+      const spiritsMapDP = gameMap.get('spirits') as Y.Map<any> | undefined;
+      if (spiritsMapDP) {
+        const spiritDataDP = spiritsMapDP.get(spiritBoardId) as any;
+        if (spiritDataDP instanceof Y.Map) {
+          doc.transact(() => {
+            const currentDestroyed = typeof spiritDataDP.get('presenceDestroyed') === 'number'
+              ? spiritDataDP.get('presenceDestroyed') as number
+              : 0;
+            const currentOnIsland = typeof spiritDataDP.get('presenceOnIsland') === 'number'
+              ? spiritDataDP.get('presenceOnIsland') as number
+              : 0;
+            spiritDataDP.set('presenceDestroyed', Math.max(0, currentDestroyed - 1));
+            spiritDataDP.set('presenceOnIsland', currentOnIsland + 1);
+          });
         }
       }
     }
@@ -641,7 +664,7 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
   const findInvaderAtWorldPoint = (
     worldPoint: Point
   ): { boardId: string; landId: string; pieceIndex: number; piece: GamePiece } | null => {
-    if (!landBounds) return null;
+    if (!allBoardHitboxes && !landBounds) return null;
     const doc = docRef.current;
     if (!doc) return null;
 
@@ -658,6 +681,8 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
       const boardX = boardData.get('x') || 0;
       const boardY = boardData.get('y') || 0;
       const rotation = boardData.get('rotation') || 0;
+      const ibt = boardData.get('boardType') as string | null;
+      const invBounds = (allBoardHitboxes && ibt ? allBoardHitboxes[ibt]?.lands : null) ?? landBounds;
 
       const localPoint = getBoardLocalPoint(
         worldPoint,
@@ -671,7 +696,7 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
       landsMap.forEach((piecesArray: any, landId: string) => {
         if (match) return;
 
-        const bounds = landBounds[parseInt(landId, 10)];
+        const bounds = invBounds ? invBounds[parseInt(landId, 10)] : null;
         if (!bounds) return;
 
         const center = getPolygonCenter((bounds as any).polygon);
@@ -714,7 +739,7 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
   };
 
   const findLandAtWorldPoint = (worldPoint: Point): { boardId: string; landId: string } | null => {
-    if (!landBounds) return null;
+    if (!allBoardHitboxes && !landBounds) return null;
     const doc = docRef.current;
     if (!doc) return null;
 
@@ -730,6 +755,9 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
       const boardX = boardData.get('x') || 0;
       const boardY = boardData.get('y') || 0;
       const rotation = boardData.get('rotation') || 0;
+      const bt = boardData.get('boardType') as string | null;
+      const bounds4Board = (allBoardHitboxes && bt ? allBoardHitboxes[bt]?.lands : null) ?? landBounds;
+      if (!bounds4Board) return;
 
       const localPoint = getBoardLocalPoint(
         { x: worldPoint.x, y: worldPoint.y },
@@ -749,7 +777,7 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
         return;
       }
 
-      for (const [landId, bounds] of Object.entries(landBounds)) {
+      for (const [landId, bounds] of Object.entries(bounds4Board)) {
         if (isPointInPolygon(localPoint, (bounds as any).polygon)) {
           match = { boardId, landId };
           break;
@@ -841,26 +869,24 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
   };
 
   const returnPresenceToDestroyedPile = (piece: GamePiece) => {
-    const spiritBoardId = piece.subtype ?? '';
-    if (!spiritBoardId) return;
+    const spiritSlotId = piece.subtype ?? '';
+    if (!spiritSlotId) return;
     const doc = docRef.current;
     if (!doc) return;
     doc.transact(() => {
       const gameMap = doc.getMap('game');
-      const boardsMap = gameMap.get('boards') as Y.Map<any> | undefined;
-      if (!boardsMap) return;
-      const boardData = boardsMap.get(spiritBoardId) as any;
-      if (!boardData) return;
-      const spiritState = boardData.get('spiritState');
-      if (!(spiritState instanceof Y.Map)) return;
-      const onIsland = typeof spiritState.get('presenceOnIsland') === 'number'
-        ? Math.max(0, (spiritState.get('presenceOnIsland') as number) - 1)
+      const spiritsMap = gameMap.get('spirits') as Y.Map<any> | undefined;
+      if (!spiritsMap) return;
+      const spiritData = spiritsMap.get(spiritSlotId) as any;
+      if (!(spiritData instanceof Y.Map)) return;
+      const onIsland = typeof spiritData.get('presenceOnIsland') === 'number'
+        ? Math.max(0, (spiritData.get('presenceOnIsland') as number) - 1)
         : 0;
-      const destroyed = typeof spiritState.get('presenceDestroyed') === 'number'
-        ? (spiritState.get('presenceDestroyed') as number) + 1
+      const destroyed = typeof spiritData.get('presenceDestroyed') === 'number'
+        ? (spiritData.get('presenceDestroyed') as number) + 1
         : 1;
-      spiritState.set('presenceOnIsland', onIsland);
-      spiritState.set('presenceDestroyed', destroyed);
+      spiritData.set('presenceOnIsland', onIsland);
+      spiritData.set('presenceDestroyed', destroyed);
     }, 'presence-destroy');
   };
 
@@ -1131,19 +1157,17 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
           if (doc2) {
             const gameMap2 = doc2.getMap('game') as Y.Map<unknown>;
             doc2.transact(() => {
-              const boards2 = gameMap2.get('boards') as Y.Map<unknown> | undefined;
-              if (!(boards2 instanceof Y.Map)) return;
-              const boardData2 = boards2.get(spiritBoardId2) as Y.Map<unknown> | undefined;
-              if (!(boardData2 instanceof Y.Map)) return;
-              const spiritState2 = boardData2.get('spiritState') as Y.Map<unknown> | undefined;
-              if (!(spiritState2 instanceof Y.Map)) return;
-              const inSupply = typeof spiritState2.get('presenceInSupply') === 'number'
-                ? (spiritState2.get('presenceInSupply') as number)
+              const spirits2 = gameMap2.get('spirits') as Y.Map<unknown> | undefined;
+              if (!(spirits2 instanceof Y.Map)) return;
+              const spiritData2 = spirits2.get(spiritBoardId2) as Y.Map<unknown> | undefined;
+              if (!(spiritData2 instanceof Y.Map)) return;
+              const inSupply = typeof spiritData2.get('presenceInSupply') === 'number'
+                ? (spiritData2.get('presenceInSupply') as number)
                 : 0;
-              const onIsland = typeof spiritState2.get('presenceOnIsland') === 'number'
-                ? (spiritState2.get('presenceOnIsland') as number)
+              const onIsland = typeof spiritData2.get('presenceOnIsland') === 'number'
+                ? (spiritData2.get('presenceOnIsland') as number)
                 : 0;
-              const rawSupplySlots = spiritState2.get('presenceSupplySlotIndices');
+              const rawSupplySlots = spiritData2.get('presenceSupplySlotIndices');
               const currentSupplySlots = Array.isArray(rawSupplySlots)
                 ? [...new Set(rawSupplySlots
                   .filter((entry): entry is number => typeof entry === 'number' && Number.isFinite(entry))
@@ -1169,9 +1193,9 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
 
               nextSupplySlots = [...new Set(nextSupplySlots)].sort((a, b) => a - b);
 
-              spiritState2.set('presenceSupplySlotIndices', nextSupplySlots);
-              spiritState2.set('presenceInSupply', nextSupplySlots.length || Math.max(0, inSupply + 1));
-              spiritState2.set('presenceOnIsland', Math.max(0, onIsland - 1));
+              spiritData2.set('presenceSupplySlotIndices', nextSupplySlots);
+              spiritData2.set('presenceInSupply', nextSupplySlots.length || Math.max(0, inSupply + 1));
+              spiritData2.set('presenceOnIsland', Math.max(0, onIsland - 1));
             });
           }
         }
@@ -1225,51 +1249,62 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
 
   const getPieceImage = (type: string) => pieceImageMap[type];
 
-  const createBoard = () => {
+  const usedBoardTypes = useMemo<Set<string>>(() => {
+    const used = new Set<string>();
+    boards.forEach((boardData) => {
+      const bt = boardData.get('boardType') as string | undefined;
+      if (bt) used.add(bt);
+    });
+    return used;
+  }, [boards]);
+
+  const createBoardWithType = (nickname: string) => {
     const doc = docRef.current;
-    if (!doc) {
-      return;
-    }
+    if (!doc) return;
 
     const gameMap = doc.getMap('game');
     const boardsMap = gameMap.get('boards') as Y.Map<any>;
-    
     if (!boardsMap) {
       console.warn('Boards map is not ready yet; wait for sync before adding boards');
       return;
     }
 
-    // Find next board ID
-    const existingIds = new Set(Array.from(boardsMap.keys()));
-    
-    const letters = 'ABCDEFGHIJ'.split('');
-    let newBoardId = '';
-    for (const letter of letters) {
-      if (!existingIds.has(letter)) {
-        newBoardId = letter;
-        break;
-      }
+    let sameTypeCount = 0;
+    boardsMap.forEach((bd: any) => {
+      if ((bd.get('boardType') as string | undefined) === nickname) sameTypeCount++;
+    });
+    let newBoardId = sameTypeCount === 0 ? nickname : `${nickname}${sameTypeCount + 1}`;
+    let suffix = sameTypeCount + 1;
+    while (boardsMap.has(newBoardId)) {
+      suffix++;
+      newBoardId = `${nickname}${suffix}`;
     }
 
-    if (!newBoardId) {
-      alert('Cannot add more boards - maximum 10 boards per game');
-      return;
-    }
-
-    // Create new board
     const newBoard = new Y.Map();
     newBoard.set('boardId', newBoardId);
+    newBoard.set('boardType', nickname);
     newBoard.set('x', 300 + Math.random() * 100);
     newBoard.set('y', 200 + Math.random() * 100);
     newBoard.set('rotation', 0);
 
     const lands = new Y.Map();
-    for (let i = 1; i <= 8; i++) {
+    const landCount = allBoardHitboxes?.[nickname]
+      ? Object.keys(allBoardHitboxes[nickname].lands).length
+      : 8;
+    for (let i = 1; i <= landCount; i++) {
       lands.set(i.toString(), new Y.Array());
     }
     newBoard.set('lands', lands);
 
     boardsMap.set(newBoardId, newBoard);
+    setShowBoardPicker(false);
+  };
+
+  const pickRandomBoard = () => {
+    const available = BOARDS.filter((b) => !usedBoardTypes.has(b.nickname));
+    if (available.length === 0) return;
+    const pick = available[Math.floor(Math.random() * available.length)];
+    createBoardWithType(pick.nickname);
   };
 
   return (
@@ -1287,7 +1322,7 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
         </div>
         <div className="flex items-center gap-2">
           <button
-            onClick={createBoard}
+            onClick={() => setShowBoardPicker(true)}
             className="px-4 py-2 rounded bg-slate-800 text-white hover:bg-slate-700 transition"
           >
             + Add Board
@@ -1419,6 +1454,8 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
             const boardX = boardData.get('x') || 0;
             const boardY = boardData.get('y') || 0;
             const rotation = boardData.get('rotation') || 0;
+            const clickBoardType = (boardData.get('boardType') as string | null) ?? boardId;
+            const clickBoardLandBounds = (allBoardHitboxes && clickBoardType ? allBoardHitboxes[clickBoardType]?.lands : null) ?? landBounds;
 
             const localPoint = getBoardLocalPoint(
               { x: clickX, y: clickY },
@@ -1428,9 +1465,9 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
               boardDimensions.width,
               boardDimensions.height
             );
-            
+
             // Only treat clicks on actual island polygons as board clicks.
-            if (landBounds && isPointOnIsland(localPoint, landBounds)) {
+            if (clickBoardLandBounds && isPointOnIsland(localPoint, clickBoardLandBounds)) {
               setSelectedBoardId(boardId);
 
               handleBoardMouseDown(e, boardId);
@@ -1468,6 +1505,10 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
               }
 
               return boardEntries.map(([boardId, boardData]) => {
+              const boardType = (boardData.get('boardType') as string | null) ?? boardId;
+              const boardHitboxEntry = allBoardHitboxes && boardType ? allBoardHitboxes[boardType] : null;
+              const boardLandBounds = boardHitboxEntry?.lands ?? landBounds;
+              const thisBoardImage = boardType ? boardImageByNickname[boardType] : undefined;
               const boardX = draggingBoardId === boardId && dragPreviewPos ? dragPreviewPos.x : (boardData.get('x') || 0);
               const boardY = draggingBoardId === boardId && dragPreviewPos ? dragPreviewPos.y : (boardData.get('y') || 0);
               const boardStagePos = toStagePoint(boardX, boardY);
@@ -1488,13 +1529,14 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
                   {/* Board content */}
                   <Group>
                     {/* Background - either image or fallback color */}
-                    {boardImage ? (
+                    {thisBoardImage ? (
                       <Image
-                        image={boardImage}
+                        image={thisBoardImage}
                         x={0}
                         y={0}
                         width={boardDimensions.width}
                         height={boardDimensions.height}
+                        listening={false}
                       />
                     ) : (
                       <Rect
@@ -1503,12 +1545,13 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
                         width={boardDimensions.width}
                         height={boardDimensions.height}
                         fill="#e2e8f0"
+                        listening={false}
                       />
                     )}
 
                     {/* Selected board outline follows actual land shapes */}
-                    {selectedBoardId === boardId && manageBoardsMode && landBounds &&
-                      Object.entries(landBounds).map(([landId, bounds]) => (
+                    {selectedBoardId === boardId && manageBoardsMode && boardLandBounds &&
+                      Object.entries(boardLandBounds).map(([landId, bounds]) => (
                         <Line
                           key={`selected-land-${boardId}-${landId}`}
                           points={polygonToLinePoints((bounds as any).polygon)}
@@ -1520,19 +1563,20 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
                       ))}
 
                     {/* Land boundaries */}
-                    {landBounds &&
-                      Object.entries(landBounds).map(([landId, bounds]) => (
+                    {boardLandBounds &&
+                      Object.entries(boardLandBounds).map(([landId, bounds]) => (
                         <Line
                           key={`land-${boardId}-${landId}`}
                           points={polygonToLinePoints((bounds as any).polygon)}
                           closed
                           stroke="#d1d5db"
                           strokeWidth={1}
+                          listening={false}
                         />
                       ))}
 
                     {/* Pieces */}
-                    {landBounds &&
+                    {boardLandBounds &&
                       landsMap &&
                       Array.from(landsMap.entries()).map(([landId, piecesArray]) => {
                         const piecesForLand: any[] = [];
@@ -1561,7 +1605,7 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
                           }
                         });
 
-                        const bounds = landBounds[parseInt(landId, 10)];
+                        const bounds = boardLandBounds[parseInt(landId, 10)];
                         if (!bounds) return null;
 
                         const center = getPolygonCenter((bounds as any).polygon);
@@ -1907,6 +1951,57 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
       </div>
       </div>
       </div>
+
+      {showBoardPicker && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-2xl">
+            <h3 className="text-lg font-semibold text-slate-900">Add Board</h3>
+            <p className="mt-1 text-sm text-slate-500">Select a board or add a random one. Each board can only appear once.</p>
+
+            <div className="mt-4 grid grid-cols-4 gap-2">
+              {BOARDS.map((board) => {
+                const used = usedBoardTypes.has(board.nickname);
+                return (
+                  <button
+                    key={board.nickname}
+                    disabled={used}
+                    onClick={() => createBoardWithType(board.nickname)}
+                    className={`flex flex-col items-center gap-1 rounded-lg border-2 p-2 transition ${
+                      used
+                        ? 'cursor-not-allowed border-slate-200 bg-slate-50 opacity-40'
+                        : 'border-slate-300 bg-white hover:border-blue-500 hover:bg-blue-50'
+                    }`}
+                  >
+                    <img
+                      src={board.imageUrl}
+                      alt={`Board ${board.nickname}`}
+                      className="h-16 w-full rounded object-cover"
+                    />
+                    <span className="text-xs font-semibold text-slate-700">Board {board.nickname}</span>
+                    {used && <span className="text-[10px] text-slate-400">In use</span>}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="mt-4 flex gap-2">
+              <button
+                onClick={pickRandomBoard}
+                disabled={usedBoardTypes.size >= BOARDS.length}
+                className="flex-1 rounded bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-40 transition"
+              >
+                Random Board
+              </button>
+              <button
+                onClick={() => setShowBoardPicker(false)}
+                className="rounded bg-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-300 transition"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {editingPiece && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">

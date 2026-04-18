@@ -160,24 +160,17 @@ const ensureGameDefaults = (gameMap: Y.Map<unknown>, spiritCountFallback: number
   gameMap.set('spiritCount', spiritCount);
 
   if (!gameMap.has('boards')) {
-    const boards = new Y.Map<unknown>();
-    // Pre-create one empty board per player so they exist before spirits are assigned.
-    for (let i = 0; i < spiritCount; i += 1) {
-      const boardId = BOARD_LETTERS[i] ?? `P${i + 1}`;
-      const board = new Y.Map<unknown>();
-      board.set('boardId', boardId);
-      board.set('playerId', i + 1);
-      board.set('x', 120 + (i % 3) * 220);
-      board.set('y', 100 + Math.floor(i / 3) * 170);
-      board.set('rotation', 0);
-      const lands = new Y.Map<unknown>();
-      for (let j = 1; j <= 8; j += 1) {
-        lands.set(String(j), new Y.Array());
-      }
-      board.set('lands', lands);
-      boards.set(boardId, board);
+    gameMap.set('boards', new Y.Map<unknown>());
+  }
+
+  // Spirit slots are independent of boards — game.spirits is the source of truth.
+  if (!gameMap.has('spirits')) {
+    const spirits = new Y.Map<unknown>();
+    for (let i = 0; i < safeSpiritFallback; i += 1) {
+      const slotId = BOARD_LETTERS[i] ?? `S${i + 1}`;
+      spirits.set(slotId, new Y.Map<unknown>());
     }
-    gameMap.set('boards', boards);
+    gameMap.set('spirits', spirits);
   }
   gameMap.set('playerCount', spiritCount);
   gameMap.set('fearThreshold', FEAR_PER_PLAYER * spiritCount);
@@ -361,17 +354,6 @@ const mapGameRowToDto = async (row: Record<string, any>): Promise<GameDto> => {
   };
 };
 
-const getNextBoardId = (existingBoardIds: string[]) => {
-  for (let i = 0; i < BOARD_LETTERS.length; i++) {
-    const candidate = BOARD_LETTERS[i] ?? `P${i + 1}`;
-    if (!existingBoardIds.includes(candidate)) {
-      return candidate;
-    }
-  }
-
-  return `P${existingBoardIds.length + 1}`;
-};
-
 // Helper to save game state to database
 const saveGameStateToDb = async (gameId: string, ydoc: Y.Doc) => {
   try {
@@ -388,7 +370,11 @@ const saveGameStateToDb = async (gameId: string, ydoc: Y.Doc) => {
          SET yjs_state = EXCLUDED.yjs_state, timestamp = EXCLUDED.timestamp`,
       [gameIdNum, yjsState]
     );
-  } catch (err) {
+  } catch (err: any) {
+    if (err?.code === '23503') {
+      console.debug(`[DB] Skipping save for deleted game ${gameId}`);
+      return;
+    }
     console.error('Error saving game state:', err);
   }
 };
@@ -547,38 +533,6 @@ const cleanupRoomStateIfEmpty = (roomName: string) => {
   }
 };
 
-// Helper to initialize a player's board
-const initializePlayerBoard = (ydoc: Y.Doc, playerId: number, boardId: string) => {
-  const gameMap = ydoc.getMap('game');
-  const boards = gameMap.get('boards') as Y.Map<any>;
-  
-  if (!boards.has(boardId)) {
-    const playerBoard = new Y.Map();
-    playerBoard.set('boardId', boardId);
-    playerBoard.set('playerId', playerId);
-    playerBoard.set('positionInitialized', true);
-    playerBoard.set('x', Math.random() * 200); // Random initial position
-    playerBoard.set('y', Math.random() * 200);
-    
-    // Initialize 8 lands with empty arrays for pieces
-    const lands = new Y.Map();
-    for (let i = 1; i <= 8; i++) {
-      lands.set(i.toString(), new Y.Array());
-    }
-    playerBoard.set('lands', lands);
-
-    const spiritState = new Y.Map();
-    spiritState.set('energy', 0);
-    spiritState.set('presenceInSupply', 13);
-    spiritState.set('presenceOnIsland', 0);
-    spiritState.set('presenceDestroyed', 0);
-    spiritState.set('presenceRemoved', 0);
-    spiritState.set('presenceColor', '#facc15');
-    playerBoard.set('spiritState', spiritState);
-    
-    boards.set(boardId, playerBoard);
-  }
-};
 
 // Middleware to verify JWT
 const verifyToken = (req: Request, res: Response, next: any) => {
@@ -785,29 +739,8 @@ app.post('/api/games/:id/join', verifyToken, async (req: Request, res: Response)
       );
     }
 
-    // Initialize board for this player in Yjs if missing.
     const ydoc = await getGameDoc(id);
     const gameMap = ydoc.getMap('game');
-    const boards = gameMap.get('boards') as Y.Map<any>;
-
-    let boardIdForUser: string | undefined;
-    const existingBoardIds: string[] = [];
-    if (boards) {
-      boards.forEach((boardData: any, boardId: string) => {
-        existingBoardIds.push(boardId);
-        if (toInt(boardData.get('playerId')) === userId) {
-          boardIdForUser = boardId;
-        }
-      });
-    }
-
-    // Only auto-create a board on join if the game has no boards at all.
-    // Games created with a player count pre-have their boards from ensureGameDefaults.
-    if (!boardIdForUser && existingBoardIds.length === 0) {
-      const nextBoardId = getNextBoardId(existingBoardIds);
-      initializePlayerBoard(ydoc, userId, nextBoardId);
-      boardIdForUser = nextBoardId;
-    }
 
     ensureGameDefaults(gameMap, updatedPlayerIds.length);
     gameMap.set('spiritCount', updatedPlayerIds.length);
@@ -817,7 +750,6 @@ app.post('/api/games/:id/join', verifyToken, async (req: Request, res: Response)
     const refreshedGame = await pool.query('SELECT * FROM games WHERE id = $1', [id]);
     res.json({
       message: 'Joined game',
-      boardId: boardIdForUser,
       game: await mapGameRowToDto(refreshedGame.rows[0]),
     });
   } catch (err: any) {
@@ -1015,25 +947,6 @@ app.post('/api/games/:id/players', verifyToken, async (req: Request, res: Respon
       [updatedPlayerIds, id]
     );
 
-    // Init board in Yjs for the new player (same as join logic)
-    const ydoc = await getGameDoc(id);
-    const gameMap = ydoc.getMap('game');
-    const boards = gameMap.get('boards') as Y.Map<any>;
-    const existingBoardIds: string[] = [];
-    let boardIdForUser: string | undefined;
-    if (boards) {
-      boards.forEach((boardData: any, boardId: string) => {
-        existingBoardIds.push(boardId);
-        if (toInt(boardData.get('playerId')) === invitedUser.id) {
-          boardIdForUser = boardId;
-        }
-      });
-    }
-    if (!boardIdForUser && existingBoardIds.length === 0) {
-      const nextBoardId = getNextBoardId(existingBoardIds);
-      initializePlayerBoard(ydoc, invitedUser.id, nextBoardId);
-    }
-
     const refreshedGame = await pool.query('SELECT * FROM games WHERE id = $1', [id]);
     res.json(await mapGameRowToDto(refreshedGame.rows[0]));
   } catch (err: any) {
@@ -1175,23 +1088,6 @@ app.post('/api/join/:token', verifyToken, async (req: Request, res: Response) =>
         'UPDATE game_invite_tokens SET used_by = $1 WHERE token = $2',
         [userId, token]
       );
-    }
-
-    // Init Yjs board
-    const ydoc = await getGameDoc(gameId);
-    const gameMap = ydoc.getMap('game');
-    const boards = gameMap.get('boards') as Y.Map<any>;
-    const existingBoardIds: string[] = [];
-    let boardIdForUser: string | undefined;
-    if (boards) {
-      boards.forEach((boardData: any, boardId: string) => {
-        existingBoardIds.push(boardId);
-        if (toInt(boardData.get('playerId')) === userId) boardIdForUser = boardId;
-      });
-    }
-    if (!boardIdForUser && existingBoardIds.length === 0) {
-      const nextBoardId = getNextBoardId(existingBoardIds);
-      initializePlayerBoard(ydoc, userId, nextBoardId);
     }
 
     const refreshedGame = await pool.query('SELECT * FROM games WHERE id = $1', [gameId]);

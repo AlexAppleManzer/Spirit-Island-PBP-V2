@@ -44,7 +44,7 @@ const BoardPage: React.FC<BoardPageProps> = ({ gameId, game, userId, token, onBa
   const [bottomPanelHeight, setBottomPanelHeight] = useState(260);
   const [savedBottomPanelHeight, setSavedBottomPanelHeight] = useState<number | null>(null);
   const [activeResizer, setActiveResizer] = useState<'vertical' | 'horizontal' | null>(null);
-  const [selectedSpiritBoardId, setSelectedSpiritBoardId] = useState<string | null>(null);
+  const [selectedSpiritSlotId, setSelectedSpiritSlotId] = useState<string | null>(null);
   const docRef = useRef<Y.Doc | null>(null);
   const providerRef = useRef<WebsocketProvider | null>(null);
   const boardViewRef = useRef<BoardViewHandle | null>(null);
@@ -167,7 +167,7 @@ const BoardPage: React.FC<BoardPageProps> = ({ gameId, game, userId, token, onBa
       if (!isSynced) return;
       const gameMap = doc.getMap('game');
       const boards = gameMap.get('boards');
-      if (!(boards instanceof Y.Map) || boards.size === 0) {
+      if (!(boards instanceof Y.Map)) {
         setError('Game state not found on server. The game may not have been initialized correctly. Please ask the owner to recreate the game.');
         return;
       }
@@ -351,7 +351,7 @@ const BoardPage: React.FC<BoardPageProps> = ({ gameId, game, userId, token, onBa
               <div className="h-full min-h-0 overflow-hidden rounded-lg border border-slate-200 bg-white shadow">
                 <GamestatePanel
                   docRef={docRef}
-                  selectedBoardId={selectedSpiritBoardId}
+                  selectedSpiritId={selectedSpiritSlotId}
                   isOwner={game.ownerId === userId}
                   gameId={gameId}
                   token={token}
@@ -391,7 +391,7 @@ const BoardPage: React.FC<BoardPageProps> = ({ gameId, game, userId, token, onBa
                   onToggleSpiritPanelHeight={toggleSpiritPanelHeight}
                   spiritPanelExpanded={savedBottomPanelHeight !== null}
                   resizeModeEnabled={resizeModeEnabled}
-                  onSelectedBoardChange={setSelectedSpiritBoardId}
+                  onSelectedSpiritChange={setSelectedSpiritSlotId}
                 />
               </div>
             </div>
