@@ -9,7 +9,7 @@ import SpiritPanelPage from '../components/SpiritPanelPage';
 
 type SnapshotEntry = { turn: number; ts: number; data: string };
 
-const SnapshotsPage: React.FC<{ docRef: React.MutableRefObject<Y.Doc | null>; gameId: string; token: string }> = ({ docRef, gameId, token }) => {
+const SnapshotsPage: React.FC<{ docRef: React.MutableRefObject<Y.Doc | null>; providerRef: React.MutableRefObject<WebsocketProvider | null>; gameId: string; token: string }> = ({ docRef, providerRef, gameId, token }) => {
   const [snapshots, setSnapshots] = useState<SnapshotEntry[]>([]);
   const [restoring, setRestoring] = useState<number | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -56,7 +56,10 @@ const SnapshotsPage: React.FC<{ docRef: React.MutableRefObject<Y.Doc | null>; ga
       try { json = JSON.parse(text); } catch { json = null; }
       if (!res.ok) throw new Error(json?.error ?? `Server returned ${res.status}`);
       setMessage('Restored. Reloading...');
-      setTimeout(() => window.location.reload(), 800);
+      // Disconnect provider immediately so the old Y.Doc can't reconnect and
+      // push stale CRDT operations back to the server before the page reloads.
+      providerRef.current?.disconnect();
+      setTimeout(() => window.location.reload(), 400);
     } catch (err: any) {
       setMessage(`Error: ${err.message}`);
     } finally {
@@ -512,7 +515,7 @@ const BoardPage: React.FC<BoardPageProps> = ({ gameId, game, userId, token, onBa
         ) : subpage === 'invader-setup' ? (
           <InvaderDeckSetupPage docRef={docRef} />
         ) : subpage === 'snapshots' ? (
-          <SnapshotsPage docRef={docRef} gameId={gameId} token={token} />
+          <SnapshotsPage docRef={docRef} providerRef={providerRef} gameId={gameId} token={token} />
         ) : (
           <EventDeckSetupPage docRef={docRef} />
         )}

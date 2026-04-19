@@ -866,8 +866,31 @@ app.post('/api/games/:id/restore-snapshot', verifyToken, async (req: Request, re
     const bytes = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
 
+    // Preserve current snapshots so they survive the restore
+    const currentDoc = gameDocs.get(id);
+    const currentSnapshots: Y.Map<unknown>[] = [];
+    if (currentDoc) {
+      currentDoc.getArray('snapshots').forEach((entry) => {
+        if (entry instanceof Y.Map) currentSnapshots.push(entry);
+      });
+    }
+
     const restoredDoc = new Y.Doc();
     Y.applyUpdate(restoredDoc, bytes);
+
+    // Overwrite the restored snapshots array with the preserved entries
+    if (currentSnapshots.length > 0) {
+      restoredDoc.transact(() => {
+        const arr = restoredDoc.getArray('snapshots');
+        if (arr.length > 0) arr.delete(0, arr.length);
+        const entries = currentSnapshots.map((old) => {
+          const entry = new Y.Map<unknown>();
+          old.forEach((val, key) => entry.set(key, val));
+          return entry;
+        });
+        arr.push(entries);
+      });
+    }
 
     // Cancel any pending debounced save — it would overwrite the restore with the old state
     const pendingForGame = pendingFlushes.get(id);
