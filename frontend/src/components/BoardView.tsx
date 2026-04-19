@@ -233,7 +233,8 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
   const [manageBoardsMode, setManageBoardsMode] = useState(false);
   const [selectedBoardId, setSelectedBoardId] = useState<string | null>(null);
   const [isPanningView, setIsPanningView] = useState(false);
-  const [panStart, setPanStart] = useState<{ x: number; y: number; scrollLeft: number; scrollTop: number } | null>(null);
+  const [panOffset, setPanOffset] = useState({ x: -STAGE_PADDING, y: -STAGE_PADDING });
+  const [panStart, setPanStart] = useState<{ x: number; y: number; panOffsetX: number; panOffsetY: number } | null>(null);
   const [zoom, setZoom] = useState(1);
   const [pendingPiecePointer, setPendingPiecePointer] = useState<
     (PieceLocation & { startClientX: number; startClientY: number }) | null
@@ -255,7 +256,8 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
   const draggingPieceRef = useRef<(PieceLocation & { piece: GamePiece }) | null>(null);
   const pendingPiecePointerRef = useRef<{ boardId: string; landId: string; pieceIndex: number; startClientX: number; startClientY: number } | null>(null);
   const boardsRef = useRef<Map<string, any>>(new Map());
-  const stageBoundsRef = useRef({ originX: 0, originY: 0, minX: 0, minY: 0, maxRight: 0, maxBottom: 0, width: 0, height: 0 });
+  const stageBoundsRef = useRef({ minX: 0, minY: 0, maxRight: 0, maxBottom: 0 });
+  const panOffsetRef = useRef({ x: -STAGE_PADDING, y: -STAGE_PADDING });
 
   useEffect(() => {
     if (!canvasRef.current) return;
@@ -291,77 +293,46 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
     let maxRight = 0;
     let maxBottom = 0;
 
-    boards.forEach((boardData, boardId) => {
-      const x = draggingBoardId === boardId && dragPreviewPos ? dragPreviewPos.x : boardData.get('x') || 0;
-      const y = draggingBoardId === boardId && dragPreviewPos ? dragPreviewPos.y : boardData.get('y') || 0;
-
+    boards.forEach((boardData) => {
+      const x = boardData.get('x') || 0;
+      const y = boardData.get('y') || 0;
       minX = Math.min(minX, x);
       minY = Math.min(minY, y);
       maxRight = Math.max(maxRight, x + boardDimensions.width);
       maxBottom = Math.max(maxBottom, y + boardDimensions.height);
     });
 
-    const originX = Math.min(0, Math.floor(minX - STAGE_PADDING));
-    const originY = Math.min(0, Math.floor(minY - STAGE_PADDING));
-
-    return {
-      minX,
-      minY,
-      maxRight,
-      maxBottom,
-      originX,
-      originY,
-      width: Math.max(viewportSize.width, Math.ceil(maxRight + STAGE_PADDING - originX)),
-      height: Math.max(viewportSize.height, Math.ceil(maxBottom + STAGE_PADDING - originY)),
-    };
-  }, [
-    boards,
-    draggingBoardId,
-    dragPreviewPos,
-    boardDimensions.width,
-    boardDimensions.height,
-    viewportSize.width,
-    viewportSize.height,
-  ]);
+    return { minX, minY, maxRight, maxBottom };
+  }, [boards, boardDimensions.width, boardDimensions.height]);
 
   // Keep refs in sync so drag handlers always see current values without re-attaching listeners
   stageBoundsRef.current = stageBounds;
+  panOffsetRef.current = panOffset;
   boardsRef.current = boards;
   draggingBoardIdRef.current = draggingBoardId;
   dragOffsetRef.current = dragOffset;
   draggingPieceRef.current = draggingPiece;
   pendingPiecePointerRef.current = pendingPiecePointer;
 
-  const toWorldPoint = (stagePixelX: number, stagePixelY: number) => ({
-    x: stagePixelX / zoom + stageBounds.originX,
-    y: stagePixelY / zoom + stageBounds.originY,
+  const toWorldPoint = (viewportPixelX: number, viewportPixelY: number) => ({
+    x: viewportPixelX / zoom + panOffset.x,
+    y: viewportPixelY / zoom + panOffset.y,
   });
 
   const toStagePoint = (worldX: number, worldY: number) => ({
-    x: (worldX - stageBounds.originX) * zoom,
-    y: (worldY - stageBounds.originY) * zoom,
+    x: (worldX - panOffset.x) * zoom,
+    y: (worldY - panOffset.y) * zoom,
   });
 
   const centerViewOnBoards = useCallback(() => {
-    if (!canvasRef.current || boards.size === 0) return;
-
+    if (boards.size === 0) return;
     const worldCenterX = (stageBounds.minX + stageBounds.maxRight) / 2;
     const worldCenterY = (stageBounds.minY + stageBounds.maxBottom) / 2;
-    const stageCenterX = (worldCenterX - stageBounds.originX) * zoom;
-    const stageCenterY = (worldCenterY - stageBounds.originY) * zoom;
-
-    const maxScrollLeft = Math.max(0, stageBounds.width * zoom - viewportSize.width);
-    const maxScrollTop = Math.max(0, stageBounds.height * zoom - viewportSize.height);
-
-    canvasRef.current.scrollLeft = Math.min(
-      Math.max(0, stageCenterX - viewportSize.width / 2),
-      maxScrollLeft
-    );
-    canvasRef.current.scrollTop = Math.min(
-      Math.max(0, stageCenterY - viewportSize.height / 2),
-      maxScrollTop
-    );
-  }, [boards.size, stageBounds, zoom, canvasRef, viewportSize]);
+    setPanOffset({
+      x: worldCenterX - viewportSize.width / (2 * zoom),
+      y: worldCenterY - viewportSize.height / (2 * zoom),
+    });
+  }, [boards.size, stageBounds.minX, stageBounds.maxRight, stageBounds.minY, stageBounds.maxBottom, zoom, viewportSize.width, viewportSize.height]);
 
   useEffect(() => {
     if (boards.size > 0 && !didAutoCenterRef.current) {
@@ -372,7 +343,6 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
 
   const updateZoomAtPointer = (nextZoom: number, clientX?: number, clientY?: number) => {
     if (!canvasRef.current) return;
-
     const clampedZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, nextZoom));
     const prevZoom = zoom;
     if (Math.abs(clampedZoom - prevZoom) < 0.0001) return;
@@ -380,29 +350,13 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
     const rect = canvasRef.current.getBoundingClientRect();
     const pointerViewportX = clientX !== undefined ? clientX - rect.left : viewportSize.width / 2;
     const pointerViewportY = clientY !== undefined ? clientY - rect.top : viewportSize.height / 2;
-    const pointerStageX = canvasRef.current.scrollLeft + pointerViewportX;
-    const pointerStageY = canvasRef.current.scrollTop + pointerViewportY;
-    const pointerWorldX = pointerStageX / prevZoom + stageBounds.originX;
-    const pointerWorldY = pointerStageY / prevZoom + stageBounds.originY;
+    const pointerWorldX = pointerViewportX / prevZoom + panOffset.x;
+    const pointerWorldY = pointerViewportY / prevZoom + panOffset.y;
 
     setZoom(clampedZoom);
-
-    requestAnimationFrame(() => {
-      if (!canvasRef.current) return;
-
-      const newStageX = (pointerWorldX - stageBounds.originX) * clampedZoom;
-      const newStageY = (pointerWorldY - stageBounds.originY) * clampedZoom;
-      const maxScrollLeft = Math.max(0, stageBounds.width * clampedZoom - viewportSize.width);
-      const maxScrollTop = Math.max(0, stageBounds.height * clampedZoom - viewportSize.height);
-
-      canvasRef.current.scrollLeft = Math.min(
-        Math.max(0, newStageX - pointerViewportX),
-        maxScrollLeft
-      );
-      canvasRef.current.scrollTop = Math.min(
-        Math.max(0, newStageY - pointerViewportY),
-        maxScrollTop
-      );
+    setPanOffset({
+      x: pointerWorldX - pointerViewportX / clampedZoom,
+      y: pointerWorldY - pointerViewportY / clampedZoom,
     });
   };
 
@@ -542,9 +496,7 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
     }
 
     const rect = canvasRef.current.getBoundingClientRect();
-    const dropStageX = e.clientX - rect.left + canvasRef.current.scrollLeft;
-    const dropStageY = e.clientY - rect.top + canvasRef.current.scrollTop;
-    const { x: dropX, y: dropY } = toWorldPoint(dropStageX, dropStageY);
+    const { x: dropX, y: dropY } = toWorldPoint(e.clientX - rect.left, e.clientY - rect.top);
 
     const doc = docRef.current;
     if (!doc) return;
@@ -1019,9 +971,7 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
 
     setDraggingBoardId(boardId);
     setDragPreviewPos({ x: boardX, y: boardY });
-    const pointerStageX = e.clientX - rect.left + canvasRef.current.scrollLeft;
-    const pointerStageY = e.clientY - rect.top + canvasRef.current.scrollTop;
-    const pointerWorld = toWorldPoint(pointerStageX, pointerStageY);
+    const pointerWorld = toWorldPoint(e.clientX - rect.left, e.clientY - rect.top);
 
     setDragOffset({
       x: pointerWorld.x - boardX,
@@ -1035,11 +985,9 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
     const handleMouseMove = (e: MouseEvent) => {
       if (!canvasRef.current || !manageBoardsMode) return;
       const rect = canvasRef.current.getBoundingClientRect();
-      const { originX, originY } = stageBoundsRef.current;
-      const pointerStageX = e.clientX - rect.left + canvasRef.current.scrollLeft;
-      const pointerStageY = e.clientY - rect.top + canvasRef.current.scrollTop;
-      const pointerWorldX = pointerStageX / zoom + originX;
-      const pointerWorldY = pointerStageY / zoom + originY;
+      const { x: panX, y: panY } = panOffsetRef.current;
+      const pointerWorldX = (e.clientX - rect.left) / zoom + panX;
+      const pointerWorldY = (e.clientY - rect.top) / zoom + panY;
       const { x: offX, y: offY } = dragOffsetRef.current;
       const newX = pointerWorldX - offX;
       const newY = pointerWorldY - offY;
@@ -1079,9 +1027,10 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
     const handleMouseMove = (e: MouseEvent) => {
       const deltaX = e.clientX - panStart.x;
       const deltaY = e.clientY - panStart.y;
-
-      canvasRef.current!.scrollLeft = panStart.scrollLeft - deltaX;
-      canvasRef.current!.scrollTop = panStart.scrollTop - deltaY;
+      setPanOffset({
+        x: panStart.panOffsetX - deltaX / zoom,
+        y: panStart.panOffsetY - deltaY / zoom,
+      });
     };
 
     const handleMouseUp = () => {
@@ -1129,11 +1078,9 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
         });
       }
 
-      const { originX, originY } = stageBoundsRef.current;
+      const { x: panX, y: panY } = panOffsetRef.current;
       const rect = canvasRef.current.getBoundingClientRect();
-      const pointerStageX = e.clientX - rect.left + canvasRef.current.scrollLeft;
-      const pointerStageY = e.clientY - rect.top + canvasRef.current.scrollTop;
-      const pointerWorld = { x: pointerStageX / zoom + originX, y: pointerStageY / zoom + originY };
+      const pointerWorld = { x: (e.clientX - rect.left) / zoom + panX, y: (e.clientY - rect.top) / zoom + panY };
       setDraggingPieceWorldPoint(pointerWorld);
 
       // Track drop zone hover for visual feedback
@@ -1166,10 +1113,8 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
         }
 
         const rect = canvasRef.current!.getBoundingClientRect();
-        const { originX, originY } = stageBoundsRef.current;
-        const pointerStageX = e.clientX - rect.left + canvasRef.current!.scrollLeft;
-        const pointerStageY = e.clientY - rect.top + canvasRef.current!.scrollTop;
-        const pointerWorld = { x: pointerStageX / zoom + originX, y: pointerStageY / zoom + originY };
+        const { x: panX, y: panY } = panOffsetRef.current;
+        const pointerWorld = { x: (e.clientX - rect.left) / zoom + panX, y: (e.clientY - rect.top) / zoom + panY };
         const targetLand = findLandAtWorldPoint(pointerWorld);
 
         if (targetLand) {
@@ -1476,9 +1421,7 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
           minWidth: 0,
           position: 'absolute',
           display: 'block',
-          overflow: 'auto',
-          scrollbarWidth: 'none',
-          msOverflowStyle: 'none',
+          overflow: 'hidden',
         }}
         onAuxClick={(e) => {
           if (e.button === 1) {
@@ -1503,16 +1446,14 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
             setPanStart({
               x: e.clientX,
               y: e.clientY,
-              scrollLeft: canvasRef.current.scrollLeft,
-              scrollTop: canvasRef.current.scrollTop,
+              panOffsetX: panOffset.x,
+              panOffsetY: panOffset.y,
             });
             return;
           }
 
           const rect = canvasRef.current.getBoundingClientRect();
-          const clickStageX = e.clientX - rect.left + canvasRef.current.scrollLeft;
-          const clickStageY = e.clientY - rect.top + canvasRef.current.scrollTop;
-          const { x: clickX, y: clickY } = toWorldPoint(clickStageX, clickStageY);
+          const { x: clickX, y: clickY } = toWorldPoint(e.clientX - rect.left, e.clientY - rect.top);
 
           // Only allow board management when in manage mode
           if (!manageBoardsMode) {
@@ -1553,12 +1494,12 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
           setPanStart({
             x: e.clientX,
             y: e.clientY,
-            scrollLeft: canvasRef.current.scrollLeft,
-            scrollTop: canvasRef.current.scrollTop,
+            panOffsetX: panOffset.x,
+            panOffsetY: panOffset.y,
           });
         }}
       >
-        <Stage width={stageBounds.width * zoom} height={stageBounds.height * zoom} ref={stageRef}>
+        <Stage width={viewportSize.width} height={viewportSize.height} ref={stageRef}>
           {/* Static layer: backgrounds + land outlines — never re-renders on piece/drag changes */}
           <Layer listening={false}>
             {renderEntries.map(([boardId, boardData]) => {
