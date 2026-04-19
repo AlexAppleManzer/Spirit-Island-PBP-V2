@@ -65,7 +65,7 @@ const ensureDatabaseSchema = async () => {
 // Express setup
 const app = express();
 app.use(cors({ origin: process.env.FRONTEND_URL || 'http://localhost:5173' }));
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 
 const authRateLimit = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
@@ -157,7 +157,9 @@ const ensureGameDefaults = (gameMap: Y.Map<unknown>, spiritCountFallback: number
     getSafeNumber(gameMap.get('spiritCount'), getSafeNumber(gameMap.get('playerCount'), safeSpiritFallback)),
     0
   );
-  gameMap.set('spiritCount', spiritCount);
+  if (!gameMap.has('spiritCount')) {
+    gameMap.set('spiritCount', spiritCount);
+  }
 
   if (!gameMap.has('boards')) {
     gameMap.set('boards', new Y.Map<unknown>());
@@ -172,8 +174,12 @@ const ensureGameDefaults = (gameMap: Y.Map<unknown>, spiritCountFallback: number
     }
     gameMap.set('spirits', spirits);
   }
-  gameMap.set('playerCount', spiritCount);
-  gameMap.set('fearThreshold', FEAR_PER_PLAYER * spiritCount);
+  if (!gameMap.has('playerCount')) {
+    gameMap.set('playerCount', spiritCount);
+  }
+  if (!gameMap.has('fearThreshold')) {
+    gameMap.set('fearThreshold', FEAR_PER_PLAYER * spiritCount);
+  }
 
   // Initialize gameConfig with adversary and fear thresholds
   let gameConfig = gameMap.get('gameConfig');
@@ -404,15 +410,38 @@ const loadGameStateFromDb = async (gameId: string, ydoc: Y.Doc): Promise<boolean
   }
 };
 
+const pendingFlushes = new Map<string, { ydoc: Y.Doc; timer: ReturnType<typeof setTimeout> }>();
+
 const attachSaveListener = (gameId: string, ydoc: Y.Doc) => {
-  let saveTimeout: any = null;
   ydoc.on('update', () => {
-    if (saveTimeout) clearTimeout(saveTimeout);
-    saveTimeout = setTimeout(() => {
+    const existing = pendingFlushes.get(gameId);
+    if (existing) clearTimeout(existing.timer);
+    const timer = setTimeout(() => {
+      pendingFlushes.delete(gameId);
       saveGameStateToDb(gameId, ydoc);
     }, 1000);
+    pendingFlushes.set(gameId, { ydoc, timer });
   });
 };
+
+const flushAllPendingSaves = async () => {
+  const entries = [...pendingFlushes.entries()];
+  pendingFlushes.clear();
+  await Promise.all(entries.map(([gameId, { ydoc, timer }]) => {
+    clearTimeout(timer);
+    return saveGameStateToDb(gameId, ydoc);
+  }));
+};
+
+const shutdown = async () => {
+  console.log('[Server] Flushing pending saves before exit...');
+  await flushAllPendingSaves();
+  process.exit(0);
+};
+
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
+process.on('beforeExit', flushAllPendingSaves);
 
 const getGameDoc = async (gameId: string): Promise<Y.Doc> => {
   const existing = gameDocs.get(gameId);
@@ -809,6 +838,61 @@ app.post('/api/games/:id/leave', verifyToken, async (req: Request, res: Response
       game: await mapGameRowToDto(updateResult.rows[0]),
     });
   } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Restore a turn snapshot (owner-only)
+app.post('/api/games/:id/restore-snapshot', verifyToken, async (req: Request, res: Response) => {
+  try {
+    const id = req.params.id as string;
+    const userId = (req as any).user.id;
+    const { data } = req.body as { data?: unknown };
+
+    if (typeof data !== 'string' || data.length === 0) {
+      return res.status(400).json({ error: 'data is required (base64 Yjs state)' });
+    }
+
+    const gameResult = await pool.query('SELECT * FROM games WHERE id = $1', [id]);
+    if (gameResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Game not found' });
+    }
+    const game = gameResult.rows[0] as Record<string, any>;
+    if (toInt(game.owner_id) !== userId) {
+      return res.status(403).json({ error: 'Only the game owner can restore snapshots' });
+    }
+
+    const binary = atob(data);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+
+    const restoredDoc = new Y.Doc();
+    Y.applyUpdate(restoredDoc, bytes);
+
+    // Cancel any pending debounced save — it would overwrite the restore with the old state
+    const pendingForGame = pendingFlushes.get(id);
+    if (pendingForGame) {
+      clearTimeout(pendingForGame.timer);
+      pendingFlushes.delete(id);
+    }
+
+    await saveGameStateToDb(id, restoredDoc);
+
+    // Evict in-memory doc so next WS connection reloads from DB
+    const roomName = `game-${id}`;
+    const room = roomStates.get(roomName);
+    if (room) {
+      room.clients.forEach((client) => client.close());
+      room.ydoc.off('update', room.onDocUpdate);
+      room.awareness.off('update', room.onAwarenessUpdate);
+      roomStates.delete(roomName);
+    }
+    gameDocs.delete(id);
+    gameDocsPending.delete(id);
+
+    res.json({ message: 'Snapshot restored — clients will reconnect with restored state' });
+  } catch (err: any) {
+    console.error('Restore snapshot error:', err);
     res.status(500).json({ error: err.message });
   }
 });

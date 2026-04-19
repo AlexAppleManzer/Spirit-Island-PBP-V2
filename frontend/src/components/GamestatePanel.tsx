@@ -284,21 +284,27 @@ const ensureGamestateDefaults = (doc: Y.Doc) => {
       : 'growth';
   gameMap.set('currentPhase', phase);
 
-  if (!gameMap.has('boards')) {
-    gameMap.set('boards', new Y.Map());
-  }
-
   const spiritCount = clampMin(getSafeNumber(gameMap.get('spiritCount'), getSafeNumber(gameMap.get('playerCount'), 1)), 1);
   const fearThreshold = FEAR_PER_PLAYER * spiritCount;
 
-  gameMap.set('spiritCount', spiritCount);
-  gameMap.set('playerCount', spiritCount);
-  gameMap.set('fearThreshold', fearThreshold);
+  if (!gameMap.has('spiritCount')) {
+    gameMap.set('spiritCount', spiritCount);
+  }
+  if (!gameMap.has('playerCount')) {
+    gameMap.set('playerCount', spiritCount);
+  }
+  if (!gameMap.has('fearThreshold')) {
+    gameMap.set('fearThreshold', fearThreshold);
+  }
 
   const fearPool = clampMin(getSafeNumber(gameMap.get('fearPool'), 0), 0);
   const fearCardsEarned = clampMin(getSafeNumber(gameMap.get('fearCardsEarned'), 0), 0);
-  gameMap.set('fearPool', fearPool);
-  gameMap.set('fearCardsEarned', fearCardsEarned);
+  if (!gameMap.has('fearPool')) {
+    gameMap.set('fearPool', fearPool);
+  }
+  if (!gameMap.has('fearCardsEarned')) {
+    gameMap.set('fearCardsEarned', fearCardsEarned);
+  }
 
   let fearThresholds = DEFAULT_FEAR_THRESHOLDS;
   const gameConfig = gameMap.get('gameConfig');
@@ -309,7 +315,10 @@ const ensureGamestateDefaults = (doc: Y.Doc) => {
     }
   }
 
-  gameMap.set('terrorLevel', getTerrorLevelFromFearCards(fearCardsEarned, fearThresholds));
+  // terrorLevel is derived from fearCardsEarned + fearThresholds — computed in readSnapshot, not stored
+  if (!gameMap.has('terrorLevel')) {
+    gameMap.set('terrorLevel', getTerrorLevelFromFearCards(fearCardsEarned, fearThresholds));
+  }
 
   // Adversary identity (set once at game creation, read-only here)
   const adversaryId = (gameConfig instanceof Y.Map
@@ -379,7 +388,9 @@ const ensureGamestateDefaults = (doc: Y.Doc) => {
     gameMap.set('invaderDiscardCards', parseInvaderCardList(gameMap.get('invaderDiscardCards')));
   }
 
-  gameMap.set('invaderTrackCards', parseTrackCards(gameMap.get('invaderTrackCards')));
+  if (!gameMap.has('invaderTrackCards')) {
+    gameMap.set('invaderTrackCards', parseTrackCards(gameMap.get('invaderTrackCards')));
+  }
 
   const rawEventDeckCards = gameMap.get('eventDeckCards');
   const parsedEventDeckCards = parseDeckCardList<EventCard>(rawEventDeckCards);
@@ -475,24 +486,18 @@ const ensureGamestateDefaults = (doc: Y.Doc) => {
     gameMap.set('fearEarnedCards', normalizedFearEarned);
   }
 
-  const decks = ensureNestedMap(gameMap, 'decks');
-  decks.set('invader', parseInvaderCardList(gameMap.get('invaderDeckCards')).length);
-  decks.set('fear', parseDeckCardList<FearCard>(gameMap.get('fearDeckCards')).length);
-  decks.set('event', parseDeckCardList<EventCard>(gameMap.get('eventDeckCards')).length);
+  // Ensure decks/discards nested maps exist for legacy games that pre-date them
+  if (!gameMap.has('decks')) {
+    ensureNestedMap(gameMap, 'decks');
+  }
+  if (!gameMap.has('discards')) {
+    ensureNestedMap(gameMap, 'discards');
+  }
 
-  const discards = ensureNestedMap(gameMap, 'discards');
-  discards.set('invader', parseInvaderCardList(gameMap.get('invaderDiscardCards')).length);
-  discards.set('fear', parseDeckCardList<FearCard>(gameMap.get('fearDiscardCards')).length);
-  discards.set('event', parseDeckCardList<EventCard>(gameMap.get('eventDiscardCards')).length);
-  discards.set('blight', parseBlightCardList(gameMap.get('blightDiscardCards')).length);
-
-  const currentBlightCard = parseSingleBlightCard(gameMap.get('currentBlightCard'));
-  const persistedBlightLoss = gameMap.get('blightLoss');
-  const shouldBeBlightLoss = !!(currentBlightCard && !currentBlightCard.healthy && blightCount === 0);
-  if (typeof persistedBlightLoss !== 'boolean') {
-    gameMap.set('blightLoss', shouldBeBlightLoss);
-  } else if (!persistedBlightLoss && shouldBeBlightLoss) {
-    gameMap.set('blightLoss', true);
+  // blightLoss initialization only — actual transitions are driven by blight actions
+  if (!gameMap.has('blightLoss')) {
+    const currentBlightCard = parseSingleBlightCard(gameMap.get('currentBlightCard'));
+    gameMap.set('blightLoss', !!(currentBlightCard && !currentBlightCard.healthy && blightCount === 0));
   }
 };
 
@@ -601,7 +606,9 @@ const readSnapshot = (doc: Y.Doc): GamestateSnapshot => {
     adversaryId: (gameConfig?.get('adversary') as string) || 'none',
     adversaryLevel: getSafeNumber(gameConfig?.get('adversaryLevel'), 0),
     adversaryCounter: clampMin(getSafeNumber(gameMap.get('adversaryCounter'), 0), 0),
-    townCount: countTownsOnBoards(gameMap),
+    townCount: typeof gameMap.get('townCount') === 'number'
+      ? (gameMap.get('townCount') as number)
+      : countTownsOnBoards(gameMap),
     forgottenMinorPowerCards: parseForgottenPowerCardList(gameMap.get('forgottenMinorPowerCards')),
     forgottenMajorPowerCards: parseForgottenPowerCardList(gameMap.get('forgottenMajorPowerCards')),
     forgottenUniquePowerCards: parseForgottenPowerCardList(gameMap.get('forgottenUniquePowerCards')),
@@ -861,7 +868,35 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef, selectedSpiritI
     discards.set('blight', parseBlightCardList(gameMap.get('blightDiscardCards')).length);
   };
 
+  const resetSpiritsInMap = (gameMap: Y.Map<unknown>, resetAll: boolean) => {
+    const spirits = gameMap.get('spirits') as Y.Map<unknown> | undefined;
+    if (!(spirits instanceof Y.Map)) return;
+    spirits.forEach((spiritData) => {
+      if (!(spiritData instanceof Y.Map)) return;
+      if (resetAll) {
+        spiritData.set('gainMarkedTurn', 0);
+        spiritData.set('gainMarkedRound', 0);
+        spiritData.set('paidMarkedTurn', 0);
+        spiritData.set('paidMarkedRound', 0);
+        spiritData.set('paidAmount', 0);
+      }
+      spiritData.set('ready', false);
+    });
+  };
+
   const adjustPhase = (step: 1 | -1) => {
+    const doc = docRef.current;
+    if (!doc) return;
+
+    const currentGameMap = doc.getMap('game') as Y.Map<unknown>;
+    const currentPhaseRawPre = currentGameMap.get('currentPhase');
+    const currentPhasePre =
+      typeof currentPhaseRawPre === 'string' && TURN_PHASES.includes(currentPhaseRawPre as TurnPhase)
+        ? (currentPhaseRawPre as TurnPhase)
+        : 'growth';
+    const isNewTurn = step === 1 && currentPhasePre === TURN_PHASES[TURN_PHASES.length - 1];
+    const preAdvanceState = isNewTurn ? Y.encodeStateAsUpdate(doc) : null;
+
     withGameMap((_doc, gameMap) => {
       const currentPhaseRaw = gameMap.get('currentPhase');
       const currentPhase: TurnPhase =
@@ -881,14 +916,29 @@ const GamestatePanel: React.FC<GamestatePanelProps> = ({ docRef, selectedSpiritI
 
       if (step === 1) {
         if (currentIndex === TURN_PHASES.length - 1) {
-          gameMap.set('currentPhase', TURN_PHASES[0]);
           const turn = clampMin(getSafeNumber(gameMap.get('turn'), 1), 1);
+          gameMap.set('currentPhase', TURN_PHASES[0]);
           gameMap.set('turn', turn + 1);
+          resetSpiritsInMap(gameMap, true);
           syncDeckAndDiscardCounts(gameMap);
+
+          if (preAdvanceState) {
+            const b64 = btoa(Array.from(preAdvanceState).map((b) => String.fromCharCode(b)).join(''));
+            const snapshots = doc.getArray('snapshots');
+            const entry = new Y.Map<unknown>();
+            entry.set('turn', turn);
+            entry.set('ts', Date.now());
+            entry.set('data', b64);
+            snapshots.push([entry]);
+            if (snapshots.length > 10) {
+              snapshots.delete(0, snapshots.length - 10);
+            }
+          }
           return;
         }
 
         gameMap.set('currentPhase', TURN_PHASES[currentIndex + 1]);
+        resetSpiritsInMap(gameMap, false);
         syncDeckAndDiscardCounts(gameMap);
         return;
       }

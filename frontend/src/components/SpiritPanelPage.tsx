@@ -217,9 +217,6 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
   const [spiritToAddId, setSpiritToAddId] = useState(SPIRITS[0]?.id ?? '');
   const [layoutsBySpirit, setLayoutsBySpirit] = useState<Record<string, SpiritLayout>>({});
   const [panelAspectRatios, setPanelAspectRatios] = useState<Record<string, number>>({});
-  const lastTurnKeyRef = useRef<string | null>(null);
-  const lastStateKeyRef = useRef<string | null>(null);
-
   const withGameMap = (mutator: (gameMap: Y.Map<unknown>) => void) => {
     const doc = docRef.current;
     if (!doc) return;
@@ -237,43 +234,6 @@ const SpiritPanelPage: React.FC<SpiritPanelPageProps> = ({
       const gameMap = doc.getMap('game') as Y.Map<unknown>;
       const turn = clampMin(getSafeNumber(gameMap.get('turn'), 1), 1);
       const round = clampMin(getSafeNumber(gameMap.get('round'), turn), 1);
-      const currentPhaseRaw = gameMap.get('currentPhase');
-      const currentPhase = typeof currentPhaseRaw === 'string' ? currentPhaseRaw : 'growth';
-      const turnKey = `${turn}:${round}`;
-      const stateKey = `${turn}:${round}:${currentPhase}`;
-
-      const resetSpirits = (resetAll: boolean) => {
-        const spirits = gameMap.get('spirits') as Y.Map<unknown> | undefined;
-        if (!(spirits instanceof Y.Map)) return;
-        spirits.forEach((spiritData) => {
-          if (!(spiritData instanceof Y.Map)) return;
-          if (resetAll) {
-            spiritData.set('gainMarkedTurn', 0);
-            spiritData.set('gainMarkedRound', 0);
-            spiritData.set('paidMarkedTurn', 0);
-            spiritData.set('paidMarkedRound', 0);
-            spiritData.set('paidAmount', 0);
-          }
-          spiritData.set('ready', false);
-        });
-      };
-
-      if (lastTurnKeyRef.current !== null && lastTurnKeyRef.current !== turnKey) {
-        doc.transact(() => resetSpirits(true));
-        lastTurnKeyRef.current = turnKey;
-        lastStateKeyRef.current = stateKey;
-        return;
-      }
-
-      if (lastStateKeyRef.current !== null && lastStateKeyRef.current !== stateKey) {
-        doc.transact(() => resetSpirits(false));
-        lastStateKeyRef.current = stateKey;
-        return;
-      }
-
-      lastTurnKeyRef.current = turnKey;
-      lastStateKeyRef.current = stateKey;
-
       const spirits = gameMap.get('spirits') as Y.Map<unknown> | undefined;
       if (!(spirits instanceof Y.Map)) {
         setSpiritStates([]);

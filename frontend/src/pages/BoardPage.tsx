@@ -7,6 +7,93 @@ import InvaderDeckSetupPage from '../components/InvaderDeckSetupPage';
 import EventDeckSetupPage from '../components/EventDeckSetupPage';
 import SpiritPanelPage from '../components/SpiritPanelPage';
 
+type SnapshotEntry = { turn: number; ts: number; data: string };
+
+const SnapshotsPage: React.FC<{ docRef: React.MutableRefObject<Y.Doc | null>; gameId: string; token: string }> = ({ docRef, gameId, token }) => {
+  const [snapshots, setSnapshots] = useState<SnapshotEntry[]>([]);
+  const [restoring, setRestoring] = useState<number | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    const doc = docRef.current;
+    if (!doc) return;
+
+    const readSnapshots = () => {
+      const arr = doc.getArray('snapshots');
+      const entries: SnapshotEntry[] = [];
+      arr.forEach((item) => {
+        if (item instanceof Y.Map) {
+          const turn = item.get('turn');
+          const ts = item.get('ts');
+          const data = item.get('data');
+          if (typeof turn === 'number' && typeof ts === 'number' && typeof data === 'string') {
+            entries.push({ turn, ts, data });
+          }
+        }
+      });
+      setSnapshots([...entries].reverse());
+    };
+
+    readSnapshots();
+    const arr = doc.getArray('snapshots');
+    arr.observe(readSnapshots);
+    return () => arr.unobserve(readSnapshots);
+  }, [docRef]);
+
+  const handleRestore = async (entry: SnapshotEntry) => {
+    if (!window.confirm(`Restore to end of Turn ${entry.turn}? All clients will be disconnected and reconnected.`)) return;
+    setRestoring(entry.turn);
+    setMessage(null);
+    const backendUrl = import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:3001';
+    try {
+      const res = await fetch(`${backendUrl}/api/games/${gameId}/restore-snapshot`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ data: entry.data }),
+      });
+      const text = await res.text();
+      let json: any;
+      try { json = JSON.parse(text); } catch { json = null; }
+      if (!res.ok) throw new Error(json?.error ?? `Server returned ${res.status}`);
+      setMessage('Restored. Reloading...');
+      setTimeout(() => window.location.reload(), 800);
+    } catch (err: any) {
+      setMessage(`Error: ${err.message}`);
+    } finally {
+      setRestoring(null);
+    }
+  };
+
+  return (
+    <div className="mx-auto max-w-lg p-6">
+      <h2 className="mb-4 text-base font-semibold text-slate-800">Turn Snapshots</h2>
+      {snapshots.length === 0 ? (
+        <p className="text-sm text-slate-500">No snapshots yet. Snapshots are saved automatically when you advance to a new turn.</p>
+      ) : (
+        <ul className="space-y-2">
+          {snapshots.map((entry) => (
+            <li key={entry.turn} className="flex items-center justify-between rounded border border-slate-200 bg-white px-4 py-3">
+              <div>
+                <span className="text-sm font-medium text-slate-700">Turn {entry.turn}</span>
+                <span className="ml-3 text-xs text-slate-400">{new Date(entry.ts).toLocaleString()}</span>
+              </div>
+              <button
+                type="button"
+                disabled={restoring !== null}
+                onClick={() => handleRestore(entry)}
+                className="rounded border border-amber-300 bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700 hover:bg-amber-100 disabled:opacity-50"
+              >
+                {restoring === entry.turn ? 'Restoring…' : 'Restore'}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {message ? <p className="mt-4 text-sm text-slate-600">{message}</p> : null}
+    </div>
+  );
+};
+
 const MIN_LEFT_PANEL_PERCENT = 20;
 const MAX_LEFT_PANEL_PERCENT = 55;
 const MIN_TOP_PANEL_HEIGHT = 180;
@@ -37,7 +124,7 @@ const BoardPage: React.FC<BoardPageProps> = ({ gameId, game, userId, token, onBa
   const [wsConnected, setWsConnected] = useState(false);
   const [docReady, setDocReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [subpage, setSubpage] = useState<'board' | 'spirit' | 'invader-setup' | 'event-setup'>('board');
+  const [subpage, setSubpage] = useState<'board' | 'spirit' | 'invader-setup' | 'event-setup' | 'snapshots'>('board');
   const [boardToolbarState, setBoardToolbarState] = useState({ manageBoardsMode: false, zoomPercent: 100 });
   const [resizeModeEnabled, setResizeModeEnabled] = useState(false);
   const [leftPanelPercent, setLeftPanelPercent] = useState(30);
@@ -125,21 +212,34 @@ const BoardPage: React.FC<BoardPageProps> = ({ gameId, game, userId, token, onBa
   }, [activeResizer, resizeModeEnabled]);
 
   useEffect(() => {
-    // If provider already exists for this game, reuse it
+    // If provider already exists for this game (e.g. React StrictMode double-invoke), reuse it
     if (providerRef.current !== null) {
       console.log('[BoardPage] Provider already exists, skipping recreation');
-      setWsConnected(providerRef.current.wsconnected);
-      setDocReady(true);
+      const provider = providerRef.current;
+      setWsConnected(provider.wsconnected);
 
       const statusHandler = (event: any) => {
         console.log('[BoardPage] WebSocket status:', event.status);
-        setWsConnected(providerRef.current!.wsconnected);
+        setWsConnected(provider.wsconnected);
+      };
+      const syncedHandler = (isSynced: boolean) => {
+        if (!isSynced) return;
+        const gameMap = docRef.current?.getMap('game');
+        if (!(gameMap?.get('boards') instanceof Y.Map)) {
+          setError('Game state not found on server. The game may not have been initialized correctly. Please ask the owner to recreate the game.');
+          return;
+        }
+        setDocReady(true);
       };
 
-      providerRef.current.on('status', statusHandler);
+      provider.on('status', statusHandler);
+      (provider as any).on('synced', syncedHandler);
+      // If already synced from the first run, fire immediately
+      if ((provider as any).synced) syncedHandler(true);
 
       return () => {
-        providerRef.current?.off('status', statusHandler);
+        provider.off('status', statusHandler);
+        (provider as any).off('synced', syncedHandler);
       };
     }
 
@@ -251,6 +351,17 @@ const BoardPage: React.FC<BoardPageProps> = ({ gameId, game, userId, token, onBa
                 >
                   Event Setup
                 </button>
+                {game.ownerId === userId ? (
+                  <button
+                    type="button"
+                    onClick={() => setSubpage('snapshots')}
+                    className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${
+                      subpage === 'snapshots' ? 'bg-slate-800 text-white' : 'text-slate-600 hover:bg-white'
+                    }`}
+                  >
+                    Snapshots
+                  </button>
+                ) : null}
               </div>
             </div>
 
@@ -400,6 +511,8 @@ const BoardPage: React.FC<BoardPageProps> = ({ gameId, game, userId, token, onBa
           <SpiritPanelPage docRef={docRef} mode="manage" />
         ) : subpage === 'invader-setup' ? (
           <InvaderDeckSetupPage docRef={docRef} />
+        ) : subpage === 'snapshots' ? (
+          <SnapshotsPage docRef={docRef} gameId={gameId} token={token} />
         ) : (
           <EventDeckSetupPage docRef={docRef} />
         )}
