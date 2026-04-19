@@ -1050,6 +1050,7 @@ const BoardView = React.forwardRef<BoardViewHandle, BoardViewProps>(({ docRef, o
       const gameMap = doc.getMap('game');
       const boardsMap = gameMap.get('boards') as Y.Map<any>;
       if (!boardsMap) return;
+      if (!draggingBoardIdRef.current) return;
       const boardData = boardsMap.get(draggingBoardIdRef.current) as any;
       if (!boardData) return;
 
